@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Streaks — Daily Goals</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<style>
+  :root{
+    --bg:#12151A;
+    --card:#1C2028;
+    --card-hi:#242833;
+    --line:#2B2F3A;
+    --text:#F0F1F3;
+    --text-dim:#9599A6;
+    --text-faint:#5B5F6B;
+    --accent:#5FD98A;
+    --accent-dim:#2A5B3F;
+    --warn:#E8896A;
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    --mono: "SF Mono", ui-monospace, "Menlo", monospace;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color: transparent;}
+  html,body{margin:0; padding:0; background:var(--bg); color:var(--text); font-family:var(--font); height:100%;}
+  body{
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    overscroll-behavior-y: contain;
+  }
+  #app{max-width:520px; margin:0 auto; padding:0 18px 100px;}
+
+  /* ---- auth gate ---- */
+  .auth-screen{
+    min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    text-align:center; padding:20px;
+  }
+  .auth-screen .logo{font-size:52px; margin-bottom:10px;}
+  .auth-screen h1{font-size:26px; margin:0 0 6px; letter-spacing:-0.02em;}
+  .auth-screen p{color:var(--text-dim); font-size:14px; max-width:280px; line-height:1.5; margin:0 0 28px;}
+  .google-btn{
+    display:flex; align-items:center; gap:10px; justify-content:center;
+    background:#fff; color:#1F1F1F; border:none; border-radius:14px;
+    padding:14px 22px; font-size:15px; font-weight:600; font-family:var(--font);
+  }
+  .google-btn:active{opacity:0.85;}
+  .config-warn{
+    margin-top:24px; font-size:12px; color:var(--warn); max-width:300px; line-height:1.5;
+  }
+
+  header.top{
+    position:sticky; top:0; z-index:5;
+    background:linear-gradient(var(--bg) 75%, transparent);
+    padding:22px 0 10px;
+    display:flex; align-items:flex-start; justify-content:space-between; gap:10px;
+  }
+  header.top h1{font-size:28px; font-weight:700; letter-spacing:-0.02em; margin:0;}
+  header.top p{margin:4px 0 0; color:var(--text-dim); font-size:14px;}
+  .signout-btn{background:none; border:1px solid var(--line); color:var(--text-dim); font-size:12px; padding:7px 12px; border-radius:20px; margin-top:22px; white-space:nowrap;}
+
+  .empty{ text-align:center; padding:60px 20px; color:var(--text-dim); }
+  .empty .big{font-size:40px; margin-bottom:6px;}
+  .empty h2{color:var(--text); font-size:18px; margin:0 0 6px;}
+  .empty p{font-size:14px; margin:0; line-height:1.5;}
+
+  .goal-card{
+    background:var(--card); border:1px solid var(--line); border-radius:18px; padding:16px; margin-bottom:14px;
+    display:flex; gap:14px; align-items:center; cursor:pointer; transition:background 0.15s ease;
+  }
+  .goal-card:active{background:var(--card-hi);}
+  .ring-wrap{position:relative; width:56px; height:56px; flex:none;}
+  .ring-wrap svg{transform:rotate(-90deg);}
+  .ring-wrap .pct{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-family:var(--mono); font-size:12px; font-weight:600; color:var(--accent);}
+  .goal-info{flex:1; min-width:0;}
+  .goal-info h3{margin:0 0 3px; font-size:16px; font-weight:600; letter-spacing:-0.01em;}
+  .goal-info .meta{font-size:13px; color:var(--text-dim);}
+  .streak-pill{font-family:var(--mono); font-size:11px; font-weight:600; background:var(--accent-dim); color:var(--accent); padding:2px 8px; border-radius:20px; white-space:nowrap;}
+  .streak-pill.zero{background:#2A2D35; color:var(--text-faint);}
+  .today-btn{flex:none; width:40px; height:40px; border-radius:12px; border:1.5px solid var(--line); background:transparent; display:flex; align-items:center; justify-content:center; color:var(--text-dim); font-size:18px;}
+  .today-btn.done{background:var(--accent); border-color:var(--accent); color:#0B1410;}
+
+  .fab{
+    position:fixed; right:20px; bottom:calc(24px + env(safe-area-inset-bottom));
+    width:58px; height:58px; border-radius:50%; background:var(--accent); color:#0B1410;
+    border:none; font-size:28px; font-weight:400; display:flex; align-items:center; justify-content:center;
+    box-shadow:0 8px 24px rgba(95,217,138,0.35); z-index:10;
+  }
+  .fab:active{transform:scale(0.94);}
+
+  .sheet-backdrop{position:fixed; inset:0; background:rgba(0,0,0,0.55); display:flex; align-items:flex-end; z-index:20;}
+  .sheet{background:var(--card); width:100%; border-radius:22px 22px 0 0; padding:20px 18px calc(20px + env(safe-area-inset-bottom)); max-height:88vh; overflow-y:auto;}
+  .sheet-handle{width:36px; height:4px; background:var(--line); border-radius:3px; margin:0 auto 16px;}
+  .sheet h2{margin:0 0 18px; font-size:19px; font-weight:700;}
+  label.field{display:block; margin-bottom:16px;}
+  label.field .lbl{font-size:12px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px; display:block;}
+  input[type=text], input[type=number], input[type=time]{width:100%; background:#0F1216; border:1px solid var(--line); color:var(--text); font-size:16px; padding:12px 14px; border-radius:12px; font-family:var(--font);}
+  input:focus{outline:none; border-color:var(--accent);}
+  .type-row{display:flex; gap:8px;}
+  .type-opt{flex:1; text-align:center; padding:10px 6px; border-radius:12px; border:1px solid var(--line); font-size:12px; color:var(--text-dim);}
+  .type-opt.sel{border-color:var(--accent); color:var(--accent); background:var(--accent-dim);}
+  .target-row{display:flex; gap:10px; align-items:flex-end;}
+  .target-row input{flex:1;}
+  .target-row span{color:var(--text-dim); font-size:14px; padding-bottom:12px; white-space:nowrap;}
+  .btn-primary{width:100%; padding:15px; border-radius:14px; border:none; background:var(--accent); color:#0B1410; font-size:16px; font-weight:600; margin-top:6px;}
+  .btn-primary[disabled]{opacity:0.5;}
+  .btn-ghost{width:100%; padding:14px; border-radius:14px; border:1px solid var(--line); background:transparent; color:var(--text-dim); font-size:14px; margin-top:10px;}
+  .btn-danger-text{width:100%; text-align:center; padding:14px; color:var(--warn); font-size:14px; margin-top:4px; background:none; border:none;}
+
+  .detail-head{display:flex; align-items:center; gap:12px; margin-bottom:6px;}
+  .back-btn{background:none; border:none; color:var(--accent); font-size:16px; font-weight:600; padding:8px 10px 8px 0; display:flex; align-items:center; gap:4px;}
+  .back-btn .arrow{font-size:20px; line-height:1;}
+  .edit-btn{margin-left:auto; background:none; border:1px solid var(--line); color:var(--text-dim); font-size:13px; padding:7px 14px; border-radius:20px;}
+  .day-grid{display:grid; grid-template-columns:repeat(6, 1fr); gap:8px; margin:18px 0;}
+  .day-cell{aspect-ratio:1; border-radius:9px; background:#0F1216; border:1px solid var(--line); display:flex; align-items:center; justify-content:center; font-family:var(--mono); font-size:11px; color:var(--text-faint); position:relative;}
+  .day-cell.done{background:var(--accent); border-color:var(--accent); color:#0B1410; font-weight:700;}
+  .day-cell.miss{background:#2A1F1F; border-color:#402828; color:var(--warn);}
+  .day-cell.today{border-color:var(--accent); border-width:2px; color:var(--text);}
+  .day-cell.future{opacity:0.35;}
+  .stat-row{display:flex; gap:10px; margin-bottom:18px;}
+  .stat-box{flex:1; background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; text-align:center;}
+  .stat-box .num{font-family:var(--mono); font-size:22px; font-weight:700; color:var(--accent);}
+  .stat-box .lbl{font-size:11px; color:var(--text-dim); margin-top:2px; text-transform:uppercase; letter-spacing:0.05em;}
+  .hint{font-size:12px; color:var(--text-faint); line-height:1.5; margin-top:4px;}
+  .toast{position:fixed; bottom:100px; left:50%; transform:translateX(-50%); background:#242833; color:var(--text); padding:10px 18px; border-radius:20px; font-size:13px; z-index:30; opacity:0; transition:opacity 0.2s ease; border:1px solid var(--line);}
+  .toast.show{opacity:1;}
+  .loading{display:flex; align-items:center; justify-content:center; min-height:60vh; color:var(--text-dim); font-size:14px;}
+</style>
+</head>
+<body>
+<div id="app"><div class="loading">Loading…</div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* =========================================================
+   FILL THESE TWO IN — from Supabase → Settings → API
+   ========================================================= */
+const SUPABASE_URL = "https://gsmgbefdhvsvltgkrybu.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_skRBOwpCtMOh__qIe41gNA_1UlEVqHV";
+/* ========================================================= */
+
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let session = null;
+let goals = [];           // [{id, name, type, target, unit, days, start_date, reminder_time, log:{date:{met,value}}}]
+let view = { screen: 'list', goalId: null };
+
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(()=> t.classList.remove('show'), 1600);
+}
+
+/* ---------------- auth ---------------- */
+async function init(){
+  const { data } = await sb.auth.getSession();
+  session = data.session;
+  sb.auth.onAuthStateChange((_event, s) => {
+    session = s;
+    if(session) loadGoals(); else render();
+  });
+  if(session) await loadGoals(); else render();
+}
+
+function signInWithGoogle(){
+  sb.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo: window.location.href }
+  });
+}
+function signOut(){
+  sb.auth.signOut().then(() => { goals = []; render(); });
+}
+
+/* ---------------- data layer ---------------- */
+async function loadGoals(){
+  document.getElementById('app').innerHTML = '<div class="loading">Loading your goals…</div>';
+  const { data: goalRows, error: gErr } = await sb.from('goals').select('*').order('created_at', { ascending: true });
+  if(gErr){ toast('Failed to load goals'); console.error(gErr); render(); return; }
+  const { data: logRows, error: lErr } = await sb.from('goal_logs').select('*');
+  if(lErr){ console.error(lErr); }
+
+  goals = goalRows.map(g => {
+    const log = {};
+    (logRows || []).filter(l => l.goal_id === g.id).forEach(l => {
+      log[l.log_date] = { met: l.met, value: l.value };
+    });
+    return {
+      id: g.id, name: g.name, type: g.type, target: g.target, unit: g.unit,
+      days: g.days, start: g.start_date, reminder: g.reminder_time, log
+    };
+  });
+  view = { screen: 'list', goalId: null };
+  render();
+}
+
+async function insertGoal(payload){
+  const { data, error } = await sb.from('goals').insert({
+    user_id: session.user.id,
+    name: payload.name, type: payload.type, target: payload.target,
+    unit: payload.unit, days: payload.days, start_date: todayStr()
+  }).select().single();
+  if(error){ toast('Could not save goal'); console.error(error); return null; }
+  return data;
+}
+async function updateGoalRemote(id, payload){
+  const { error } = await sb.from('goals').update({
+    name: payload.name, type: payload.type, target: payload.target,
+    unit: payload.unit, days: payload.days
+  }).eq('id', id);
+  if(error){ toast('Could not update goal'); console.error(error); }
+}
+async function updateReminderRemote(id, reminder){
+  const { error } = await sb.from('goals').update({ reminder_time: reminder }).eq('id', id);
+  if(error){ toast('Could not save reminder'); console.error(error); }
+}
+async function deleteGoalRemote(id){
+  const { error } = await sb.from('goals').delete().eq('id', id);
+  if(error){ toast('Could not delete goal'); console.error(error); }
+}
+async function upsertLog(goalId, date, met, value){
+  const { error } = await sb.from('goal_logs').upsert({
+    goal_id: goalId, log_date: date, met, value
+  }, { onConflict: 'goal_id,log_date' });
+  if(error){ toast('Could not save log'); console.error(error); }
+}
+async function deleteLog(goalId, date){
+  const { error } = await sb.from('goal_logs').delete().eq('goal_id', goalId).eq('log_date', date);
+  if(error){ console.error(error); }
+}
+
+/* ---------------- date helpers ---------------- */
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function dateAt(startStr, offset){
+  const d = new Date(startStr + 'T00:00:00');
+  d.setDate(d.getDate() + offset);
+  return d.toISOString().slice(0,10);
+}
+function dayIndex(goal){
+  const start = new Date(goal.start + 'T00:00:00');
+  const now = new Date(todayStr() + 'T00:00:00');
+  return Math.floor((now - start) / 86400000);
+}
+function completedCount(goal){ return Object.values(goal.log).filter(v => v.met).length; }
+function currentStreak(goal){
+  let streak = 0;
+  const idx = dayIndex(goal);
+  for(let i = Math.min(idx, goal.days - 1); i >= 0; i--){
+    const d = dateAt(goal.start, i);
+    if(goal.log[d] && goal.log[d].met){ streak++; } else { break; }
+  }
+  return streak;
+}
+function ring(pct, size=56, stroke=5){
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const off = c * (1 - pct);
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+    <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="#2B2F3A" stroke-width="${stroke}"/>
+    <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="#5FD98A" stroke-width="${stroke}"
+      stroke-dasharray="${c}" stroke-dashoffset="${off}" stroke-linecap="round"/>
+  </svg>`;
+}
+function typeLabel(goal){
+  if(goal.type === 'count') return `${goal.target} ${goal.unit || 'x'} / day`;
+  if(goal.type === 'duration') return `${goal.target} min / day`;
+  return 'Daily check-in';
+}
+function escapeHtml(s){
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+/* ---------------- render ---------------- */
+function render(){
+  const app = document.getElementById('app');
+  if(!session) return renderAuth(app);
+  if(view.screen === 'list') return renderList(app);
+  if(view.screen === 'detail') return renderDetail(app);
+}
+
+function renderAuth(app){
+  const keyMissing = !SUPABASE_ANON_KEY || SUPABASE_ANON_KEY.includes('PASTE_YOUR');
+  app.innerHTML = `
+    <div class="auth-screen">
+      <div class="logo">◎</div>
+      <h1>Streaks</h1>
+      <p>Track daily goals for 30 days at a time. Sign in to sync across your devices.</p>
+      <button class="google-btn" onclick="signInWithGoogle()" ${keyMissing ? 'disabled' : ''}>
+        Continue with Google
+      </button>
+      ${keyMissing ? `<div class="config-warn">Supabase anon key isn't set yet — paste it into SUPABASE_ANON_KEY near the top of this file.</div>` : ''}
+    </div>
+  `;
+}
+
+function renderList(app){
+  const idx0 = todayStr();
+  let cards = goals.map(g => {
+    const idx = dayIndex(g);
+    const inWindow = idx >= 0 && idx < g.days;
+    const done = inWindow && g.log[idx0] && g.log[idx0].met;
+    const pct = Math.min(1, completedCount(g) / g.days);
+    const streak = currentStreak(g);
+    return `
+    <div class="goal-card" onclick="openDetail('${g.id}')">
+      <div class="ring-wrap">${ring(pct)}<div class="pct">${Math.round(pct*100)}%</div></div>
+      <div class="goal-info">
+        <h3>${escapeHtml(g.name)}</h3>
+        <div class="meta">${typeLabel(g)} · Day ${Math.min(idx+1, g.days)}/${g.days}</div>
+      </div>
+      <span class="streak-pill ${streak ? '' : 'zero'}">${streak}d</span>
+      <button class="today-btn ${done ? 'done' : ''}" onclick="event.stopPropagation(); quickLog('${g.id}')">${done ? '✓' : ''}</button>
+    </div>`;
+  }).join('');
+
+  if(goals.length === 0){
+    cards = `<div class="empty">
+      <div class="big">◎</div>
+      <h2>No goals yet</h2>
+      <p>Tap + to start a 30&#8209;day streak —<br>10 job applications a day, no junk food, 2 hours of deep work.</p>
+    </div>`;
+  }
+
+  app.innerHTML = `
+    <header class="top">
+      <div>
+        <h1>Streaks</h1>
+        <p>${session.user.email || 'Signed in'}</p>
+      </div>
+      <button class="signout-btn" onclick="signOut()">Sign out</button>
+    </header>
+    ${cards}
+    <button class="fab" onclick="openNewGoal()">+</button>
+  `;
+}
+
+async function quickLog(id){
+  const g = goals.find(x => x.id === id);
+  const d = todayStr();
+  const idx = dayIndex(g);
+  if(idx < 0 || idx >= g.days){ toast('Outside the goal window'); return; }
+
+  if(g.type === 'boolean'){
+    const cur = g.log[d];
+    if(cur && cur.met){
+      delete g.log[d];
+      await deleteLog(g.id, d);
+      toast('Unmarked');
+    } else {
+      g.log[d] = { met: true, value: 1 };
+      await upsertLog(g.id, d, true, 1);
+      toast('Nice — logged for today');
+    }
+    render();
+    return;
+  }
+  const unitWord = g.type === 'duration' ? 'minutes' : (g.unit || 'count');
+  const existing = g.log[d] ? g.log[d].value : '';
+  const val = prompt(`How many ${unitWord} today? (target: ${g.target})`, existing);
+  if(val === null) return;
+  const num = parseFloat(val);
+  if(isNaN(num)){ toast('Enter a number'); return; }
+  const met = num >= g.target;
+  g.log[d] = { met, value: num };
+  await upsertLog(g.id, d, met, num);
+  render();
+  toast(met ? 'Target hit — logged' : 'Logged (below target)');
+}
+
+function openDetail(id){ view = { screen:'detail', goalId:id }; render(); }
+function backToList(){ view = { screen:'list', goalId:null }; render(); }
+
+function renderDetail(app){
+  const g = goals.find(x => x.id === view.goalId);
+  if(!g){ backToList(); return; }
+  const idx = dayIndex(g);
+  const streak = currentStreak(g);
+  const done = completedCount(g);
+
+  let cells = '';
+  for(let i=0; i<g.days; i++){
+    const d = dateAt(g.start, i);
+    let cls = 'day-cell';
+    if(i === idx) cls += ' today';
+    if(i > idx) cls += ' future';
+    if(g.log[d]) cls += g.log[d].met ? ' done' : ' miss';
+    cells += `<div class="${cls}" onclick="${i<=idx ? `logDay('${g.id}','${d}')` : ''}">${i+1}</div>`;
+  }
+
+  app.innerHTML = `
+    <header class="top" style="display:block;">
+      <div class="detail-head">
+        <button class="back-btn" onclick="backToList()"><span class="arrow">‹</span> Back</button>
+        <button class="edit-btn" onclick="editGoal('${g.id}')">Edit</button>
+      </div>
+      <h1 style="font-size:22px;">${escapeHtml(g.name)}</h1>
+      <p>${typeLabel(g)}</p>
+    </header>
+
+    <div class="stat-row">
+      <div class="stat-box"><div class="num">${streak}</div><div class="lbl">Day streak</div></div>
+      <div class="stat-box"><div class="num">${done}/${g.days}</div><div class="lbl">Completed</div></div>
+      <div class="stat-box"><div class="num">${Math.min(idx+1,g.days)}/${g.days}</div><div class="lbl">Elapsed</div></div>
+    </div>
+
+    <div class="day-grid">${cells}</div>
+    <p class="hint">Tap any past or current day to log or edit it.</p>
+
+    ${g.reminder ? `<p class="hint">⏰ Daily reminder at ${g.reminder}</p>` : ''}
+
+    <button class="btn-ghost" onclick="editReminder('${g.id}')">Set daily reminder</button>
+    <button class="btn-danger-text" onclick="deleteGoal('${g.id}')">Delete goal</button>
+  `;
+}
+
+async function logDay(gid, d){
+  const g = goals.find(x => x.id === gid);
+  if(g.type === 'boolean'){
+    if(g.log[d] && g.log[d].met){ delete g.log[d]; await deleteLog(gid, d); }
+    else { g.log[d] = { met: true, value: 1 }; await upsertLog(gid, d, true, 1); }
+  } else {
+    const unitWord = g.type === 'duration' ? 'minutes' : (g.unit || 'count');
+    const existing = g.log[d] ? g.log[d].value : '';
+    const val = prompt(`${unitWord} for ${d}? (target: ${g.target})`, existing);
+    if(val === null) return;
+    const num = parseFloat(val);
+    if(isNaN(num)){ toast('Enter a number'); return; }
+    const met = num >= g.target;
+    g.log[d] = { met, value: num };
+    await upsertLog(gid, d, met, num);
+  }
+  render();
+}
+
+async function editReminder(gid){
+  const g = goals.find(x => x.id === gid);
+  const val = prompt('Reminder time (24h, e.g. 14:00). Leave blank to remove.', g.reminder || '');
+  if(val === null) return;
+  g.reminder = val.trim() || null;
+  await updateReminderRemote(gid, g.reminder);
+  render();
+  if(g.reminder && 'Notification' in window && Notification.permission !== 'granted'){
+    Notification.requestPermission();
+  }
+}
+
+async function deleteGoal(gid){
+  if(!confirm('Delete this goal and its history?')) return;
+  await deleteGoalRemote(gid);
+  goals = goals.filter(x => x.id !== gid);
+  backToList();
+}
+
+/* ---------------- new / edit goal sheet ---------------- */
+let draftType = 'boolean';
+let editingGoalId = null;
+function openNewGoal(){
+  editingGoalId = null;
+  draftType = 'boolean';
+  buildSheet('New goal', 'Start goal');
+  renderTargetField();
+}
+function editGoal(id){
+  const g = goals.find(x => x.id === id);
+  if(!g) return;
+  editingGoalId = id;
+  draftType = g.type;
+  buildSheet('Edit goal', 'Save changes');
+  document.getElementById('gName').value = g.name;
+  document.getElementById('gDays').value = g.days;
+  document.querySelectorAll('.type-opt').forEach(el => el.classList.toggle('sel', el.dataset.t === g.type));
+  renderTargetField();
+  if(g.type === 'count'){
+    document.getElementById('gTarget').value = g.target;
+    document.getElementById('gUnit').value = g.unit || '';
+  } else if(g.type === 'duration'){
+    document.getElementById('gTarget').value = g.target;
+  }
+}
+function buildSheet(title, submitLabel){
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-backdrop';
+  wrap.id = 'sheetBackdrop';
+  wrap.onclick = (e) => { if(e.target === wrap) closeSheet(); };
+  wrap.innerHTML = `
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <h2>${title}</h2>
+      <label class="field"><span class="lbl">Goal name</span><input type="text" id="gName" placeholder="e.g. Apply to jobs"></label>
+      <label class="field">
+        <span class="lbl">Type</span>
+        <div class="type-row" id="typeRow">
+          <div class="type-opt sel" data-t="boolean" onclick="pickType('boolean')">Yes / No</div>
+          <div class="type-opt" data-t="count" onclick="pickType('count')">Count</div>
+          <div class="type-opt" data-t="duration" onclick="pickType('duration')">Time</div>
+        </div>
+      </label>
+      <div id="targetField"></div>
+      <label class="field"><span class="lbl">Length (days)</span><input type="number" id="gDays" value="30" min="1" max="365"></label>
+      <button class="btn-primary" onclick="createGoal()">${submitLabel}</button>
+      <button class="btn-ghost" onclick="closeSheet()">Cancel</button>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+}
+function pickType(t){
+  draftType = t;
+  document.querySelectorAll('.type-opt').forEach(el => el.classList.toggle('sel', el.dataset.t === t));
+  renderTargetField();
+}
+function renderTargetField(){
+  const el = document.getElementById('targetField');
+  if(draftType === 'boolean'){
+    el.innerHTML = `<p class="hint" style="margin-bottom:16px;">You'll mark each day as done or not — good for habits like "no junk food" or "no smoking".</p>`;
+    return;
+  }
+  if(draftType === 'count'){
+    el.innerHTML = `
+      <label class="field"><span class="lbl">Daily target</span><div class="target-row"><input type="number" id="gTarget" placeholder="10" min="1"><span>per day</span></div></label>
+      <label class="field"><span class="lbl">Unit (optional)</span><input type="text" id="gUnit" placeholder="jobs, pages, calls..."></label>`;
+    return;
+  }
+  el.innerHTML = `<label class="field"><span class="lbl">Daily target</span><div class="target-row"><input type="number" id="gTarget" placeholder="120" min="1"><span>minutes</span></div></label>`;
+}
+function closeSheet(){
+  const el = document.getElementById('sheetBackdrop');
+  if(el) el.remove();
+}
+async function createGoal(){
+  const name = document.getElementById('gName').value.trim();
+  if(!name){ toast('Give it a name'); return; }
+  const days = parseInt(document.getElementById('gDays').value) || 30;
+  let target = 1, unit = '';
+  if(draftType !== 'boolean'){
+    target = parseFloat(document.getElementById('gTarget').value);
+    if(!target || target <= 0){ toast('Enter a target'); return; }
+    if(draftType === 'count') unit = document.getElementById('gUnit').value.trim();
+  }
+  const payload = { name, type: draftType, target, unit, days };
+
+  if(editingGoalId){
+    await updateGoalRemote(editingGoalId, payload);
+    const g = goals.find(x => x.id === editingGoalId);
+    Object.assign(g, payload);
+    toast('Goal updated');
+  } else {
+    const created = await insertGoal(payload);
+    if(created){
+      goals.push({ id: created.id, name, type: draftType, target, unit, days, start: created.start_date, reminder: null, log: {} });
+    }
+  }
+  closeSheet();
+  render();
+}
+
+/* ---------------- best-effort in-app reminders ---------------- */
+setInterval(() => {
+  const now = new Date();
+  const hhmm = now.toTimeString().slice(0,5);
+  const d = todayStr();
+  goals.forEach(g => {
+    if(g.reminder && g.reminder.slice(0,5) === hhmm){
+      const already = g.log[d] && g.log[d].met;
+      if(!already && 'Notification' in window && Notification.permission === 'granted'){
+        new Notification('Streaks', { body: `Time for: ${g.name}` });
+      }
+    }
+  });
+}, 30000);
+
+init();
+</script>
+</body>
+</html>
