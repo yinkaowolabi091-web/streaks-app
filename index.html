@@ -139,6 +139,12 @@ const SUPABASE_URL = "https://gsmgbefdhvsvltgkrybu.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_skRBOwpCtMOh__qIe41gNA_1UlEVqHV";
 /* ========================================================= */
 
+/* =========================================================
+   The EXACT URL this app is hosted at — must match what's
+   registered in Supabase's Redirect URLs allowlist exactly.
+   ========================================================= */
+const APP_URL = "https://yinkaowolabi091-web.github.io/streaks-app/";
+
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 let session = null;
@@ -154,6 +160,7 @@ function toast(msg){
 
 /* ---------------- auth ---------------- */
 async function init(){
+  checkForAuthError();
   const { data } = await sb.auth.getSession();
   session = data.session;
   sb.auth.onAuthStateChange((_event, s) => {
@@ -161,12 +168,29 @@ async function init(){
     if(session) loadGoals(); else render();
   });
   if(session) await loadGoals(); else render();
+  cleanUrl();
+}
+
+function checkForAuthError(){
+  const params = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams(window.location.hash.replace('#', '?'));
+  const err = params.get('error_description') || hashParams.get('error_description')
+           || params.get('error') || hashParams.get('error');
+  if(err){
+    toast(decodeURIComponent(err).replace(/\+/g, ' '));
+    console.error('Auth error:', err);
+  }
+}
+function cleanUrl(){
+  if(window.location.search || window.location.hash){
+    window.history.replaceState(null, '', APP_URL);
+  }
 }
 
 function signInWithGoogle(){
   sb.auth.signInWithOAuth({
     provider: 'google',
-    options: { redirectTo: window.location.href }
+    options: { redirectTo: APP_URL }
   });
 }
 function signOut(){
