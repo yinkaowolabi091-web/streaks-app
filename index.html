@@ -96,8 +96,8 @@
   label.field .lbl{font-size:12px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px; display:block;}
   input[type=text], input[type=number], input[type=time]{width:100%; background:#0F1216; border:1px solid var(--line); color:var(--text); font-size:16px; padding:12px 14px; border-radius:12px; font-family:var(--font);}
   input:focus{outline:none; border-color:var(--accent);}
-  .type-row{display:flex; gap:8px;}
-  .type-opt{flex:1; text-align:center; padding:10px 6px; border-radius:12px; border:1px solid var(--line); font-size:12px; color:var(--text-dim);}
+  .type-row{display:flex; flex-wrap:wrap; gap:8px;}
+  .type-opt{flex:1 1 40%; text-align:center; padding:10px 6px; border-radius:12px; border:1px solid var(--line); font-size:12px; color:var(--text-dim);}
   .type-opt.sel{border-color:var(--accent); color:var(--accent); background:var(--accent-dim);}
   .target-row{display:flex; gap:10px; align-items:flex-end;}
   .target-row input{flex:1;}
@@ -148,6 +148,18 @@
   }
   .num-stepper input:focus{outline:none;}
   .num-target-hint{text-align:center; font-size:12px; color:var(--text-faint); margin-bottom:18px;}
+
+  .record-btn{flex:none; padding:0 16px; height:40px; border-radius:20px; border:1.5px solid var(--accent); background:var(--accent-dim); color:var(--accent); font-size:13px; font-weight:600; white-space:nowrap;}
+  .elapsed-box{background:var(--card); border:1px solid var(--line); border-radius:18px; padding:26px 18px; text-align:center; margin-bottom:16px;}
+  .elapsed-box .big-num{font-family:var(--mono); font-size:30px; font-weight:700; color:var(--accent); letter-spacing:-0.01em;}
+  .elapsed-box .sub{font-size:12px; color:var(--text-dim); margin-top:6px;}
+  .record-now-btn{width:100%; padding:15px; border-radius:14px; border:none; background:var(--accent); color:#0B1410; font-size:16px; font-weight:600; margin-bottom:18px;}
+  .hist-item{display:flex; justify-content:space-between; align-items:center; padding:12px 4px; border-bottom:1px solid var(--line);}
+  .hist-item:last-child{border-bottom:none;}
+  .hist-item .when{font-size:14px; color:var(--text);}
+  .hist-item .gap{font-size:12px; color:var(--text-faint); margin-top:2px;}
+  .hist-item .del{background:none; border:none; color:var(--text-faint); font-size:18px; padding:6px 8px;}
+  .section-lbl{font-size:12px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.06em; margin:20px 0 10px;}
 </style>
 </head>
 <body>
@@ -279,15 +291,18 @@ async function loadGoals(){
   if(gErr){ toast('Failed to load goals'); console.error(gErr); render(); return; }
   const { data: logRows, error: lErr } = await sb.from('goal_logs').select('*');
   if(lErr){ console.error(lErr); }
+  const { data: eventRows, error: eErr } = await sb.from('event_logs').select('*').order('occurred_at', { ascending: false });
+  if(eErr){ console.error(eErr); }
 
   goals = goalRows.map(g => {
     const log = {};
     (logRows || []).filter(l => l.goal_id === g.id).forEach(l => {
-      log[l.log_date] = { met: l.met, value: l.value };
+      log[l.log_date] = { met: l.met, fullyMet: l.value >= g.target, value: l.value };
     });
+    const events = (eventRows || []).filter(e => e.goal_id === g.id).map(e => ({ id: e.id, at: e.occurred_at }));
     return {
       id: g.id, name: g.name, type: g.type, target: g.target, unit: g.unit,
-      days: g.days, start: g.start_date, reminder: g.reminder_time, log
+      days: g.days, start: g.start_date, reminder: g.reminder_time, log, events
     };
   });
   view = { screen: 'list', goalId: null };
@@ -328,6 +343,41 @@ async function deleteLog(goalId, date){
   const { error } = await sb.from('goal_logs').delete().eq('goal_id', goalId).eq('log_date', date);
   if(error){ console.error(error); }
 }
+async function insertEvent(goalId, atIso){
+  const { data, error } = await sb.from('event_logs').insert({ goal_id: goalId, occurred_at: atIso }).select().single();
+  if(error){ toast('Could not record'); console.error(error); return null; }
+  return data;
+}
+async function updateEventRemote(id, atIso){
+  const { error } = await sb.from('event_logs').update({ occurred_at: atIso }).eq('id', id);
+  if(error){ toast('Could not update entry'); console.error(error); }
+}
+async function deleteEventRemote(id){
+  const { error } = await sb.from('event_logs').delete().eq('id', id);
+  if(error){ toast('Could not delete entry'); console.error(error); }
+}
+
+function formatElapsed(ms){
+  if(ms < 0) ms = 0;
+  const mins = Math.floor(ms / 60000);
+  const hrs = Math.floor(mins / 60);
+  const days = Math.floor(hrs / 24);
+  const months = Math.floor(days / 30);
+  const remDays = days % 30;
+  const remHrs = hrs % 24;
+  const remMins = mins % 60;
+  const parts = [];
+  if(months) parts.push(`${months} month${months !== 1 ? 's' : ''}`);
+  if(remDays || months) parts.push(`${remDays} day${remDays !== 1 ? 's' : ''}`);
+  if(!months && remHrs) parts.push(`${remHrs} hour${remHrs !== 1 ? 's' : ''}`);
+  if(!months && !days && remMins) parts.push(`${remMins} min${remMins !== 1 ? 's' : ''}`);
+  if(parts.length === 0) return 'just now';
+  return parts.slice(0, 2).join(', ') + ' ago';
+}
+function formatWhen(iso){
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
 
 /* ---------------- date helpers ---------------- */
 function todayStr(){ return new Date().toISOString().slice(0,10); }
@@ -364,6 +414,7 @@ function ring(pct, size=56, stroke=5){
 function typeLabel(goal){
   if(goal.type === 'count') return `${goal.target} ${goal.unit || 'x'} / day`;
   if(goal.type === 'duration') return `${goal.target} min / day`;
+  if(goal.type === 'event') return 'Time-since tracker';
   return 'Daily check-in';
 }
 function escapeHtml(s){
@@ -398,6 +449,18 @@ function renderAuth(app){
 function renderList(app){
   const idx0 = todayStr();
   let cards = goals.map(g => {
+    if(g.type === 'event'){
+      const last = g.events[0];
+      const elapsed = last ? formatElapsed(Date.now() - new Date(last.at).getTime()) : 'never recorded';
+      return `
+      <div class="goal-card" onclick="openDetail('${g.id}')">
+        <div class="goal-info">
+          <h3>${escapeHtml(g.name)}</h3>
+          <div class="meta">${elapsed}</div>
+        </div>
+        <button class="record-btn" onclick="event.stopPropagation(); recordEventNow('${g.id}')">Record</button>
+      </div>`;
+    }
     const idx = dayIndex(g);
     const inWindow = idx >= 0 && idx < g.days;
     const done = inWindow && g.log[idx0] && g.log[idx0].met;
@@ -419,7 +482,7 @@ function renderList(app){
     cards = `<div class="empty">
       <div class="big">◎</div>
       <h2>No goals yet</h2>
-      <p>Tap + to start a 30&#8209;day streak —<br>10 job applications a day, no junk food, 2 hours of deep work.</p>
+      <p>Tap + to start a 30&#8209;day streak, or track "time since last" for things like relapses or habits.</p>
     </div>`;
   }
 
@@ -477,6 +540,8 @@ function backToList(){ view = { screen:'list', goalId:null }; render(); }
 function renderDetail(app){
   const g = goals.find(x => x.id === view.goalId);
   if(!g){ backToList(); return; }
+  if(g.type === 'event') return renderEventDetail(app, g);
+
   const idx = dayIndex(g);
   const streak = currentStreak(g);
   const done = completedCount(g);
@@ -515,6 +580,118 @@ function renderDetail(app){
     <button class="btn-ghost" onclick="editReminder('${g.id}')">Set daily reminder</button>
     <button class="btn-danger-text" onclick="deleteGoal('${g.id}')">Delete goal</button>
   `;
+}
+
+function renderEventDetail(app, g){
+  const last = g.events[0];
+  const elapsedMs = last ? Date.now() - new Date(last.at).getTime() : null;
+
+  let stats = '';
+  if(g.events.length >= 2){
+    const gaps = [];
+    for(let i=0; i<g.events.length-1; i++){
+      gaps.push(new Date(g.events[i].at) - new Date(g.events[i+1].at));
+    }
+    const avg = gaps.reduce((a,b)=>a+b,0) / gaps.length;
+    const longest = Math.max(...gaps);
+    stats = `
+    <div class="stat-row">
+      <div class="stat-box"><div class="num" style="font-size:14px;">${formatElapsed(avg).replace(' ago','')}</div><div class="lbl">Avg gap</div></div>
+      <div class="stat-box"><div class="num" style="font-size:14px;">${formatElapsed(longest).replace(' ago','')}</div><div class="lbl">Longest gap</div></div>
+      <div class="stat-box"><div class="num">${g.events.length}</div><div class="lbl">Total records</div></div>
+    </div>`;
+  }
+
+  let history = g.events.map((e, i) => {
+    const prev = g.events[i+1];
+    const gap = prev ? formatElapsed(new Date(e.at) - new Date(prev.at)).replace(' ago','') + ' since previous' : 'first recorded';
+    return `
+    <div class="hist-item">
+      <div>
+        <div class="when">${formatWhen(e.at)}</div>
+        <div class="gap">${gap}</div>
+      </div>
+      <button class="del" onclick="deleteEventEntry('${g.id}','${e.id}')">✕</button>
+    </div>`;
+  }).join('');
+  if(!history) history = `<p class="hint">No records yet — tap "Record now" when it happens.</p>`;
+
+  app.innerHTML = `
+    <header class="top" style="display:block;">
+      <div class="detail-head">
+        <button class="back-btn" onclick="backToList()"><span class="arrow">‹</span> Back</button>
+        <button class="edit-btn" onclick="editGoal('${g.id}')">Edit</button>
+      </div>
+      <h1 style="font-size:22px;">${escapeHtml(g.name)}</h1>
+      <p>${typeLabel(g)}</p>
+    </header>
+
+    <div class="elapsed-box">
+      <div class="big-num">${last ? formatElapsed(elapsedMs) : 'Never recorded'}</div>
+      ${last ? `<div class="sub">last: ${formatWhen(last.at)}</div>` : ''}
+    </div>
+
+    ${stats}
+
+    <button class="record-now-btn" onclick="recordEventNow('${g.id}')">Record now</button>
+    <button class="btn-ghost" onclick="recordEventCustom('${g.id}')" style="margin-bottom:18px;">Record at a different time</button>
+
+    <div class="section-lbl">History</div>
+    ${history}
+
+    <button class="btn-danger-text" onclick="deleteGoal('${g.id}')" style="margin-top:14px;">Delete goal</button>
+  `;
+}
+
+async function recordEventNow(gid){
+  const g = goals.find(x => x.id === gid);
+  const created = await insertEvent(gid, new Date().toISOString());
+  if(created){
+    g.events.unshift({ id: created.id, at: created.occurred_at });
+    render();
+    toast('Recorded');
+  }
+}
+
+function recordEventCustom(gid){
+  const g = goals.find(x => x.id === gid);
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-backdrop';
+  wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
+  const nowLocal = new Date(Date.now() - new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);
+  wrap.innerHTML = `
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <h2>Record for ${escapeHtml(g.name)}</h2>
+      <label class="field"><span class="lbl">Date & time</span><input type="datetime-local" id="evTime" value="${nowLocal}"></label>
+      <button class="btn-primary" id="evSaveBtn">Save</button>
+      <button class="btn-ghost" id="evCancelBtn">Cancel</button>
+    </div>`;
+  document.body.appendChild(wrap);
+  wrap.querySelector('#evCancelBtn').onclick = () => wrap.remove();
+  wrap.querySelector('#evSaveBtn').onclick = async () => {
+    const val = wrap.querySelector('#evTime').value;
+    if(!val){ toast('Pick a time'); return; }
+    const iso = new Date(val).toISOString();
+    wrap.remove();
+    const created = await insertEvent(gid, iso);
+    if(created){
+      g.events.push({ id: created.id, at: created.occurred_at });
+      g.events.sort((a,b) => new Date(b.at) - new Date(a.at));
+      render();
+      toast('Recorded');
+    }
+  };
+}
+
+function deleteEventEntry(gid, eventId){
+  showConfirm('Delete this record?', async () => {
+    await deleteEventRemote(eventId);
+    const g = goals.find(x => x.id === gid);
+    g.events = g.events.filter(e => e.id !== eventId);
+    render();
+    toast('Entry deleted');
+  });
 }
 
 async function logDay(gid, d){
@@ -603,10 +780,11 @@ function buildSheet(title, submitLabel){
           <div class="type-opt sel" data-t="boolean" onclick="pickType('boolean')">Yes / No</div>
           <div class="type-opt" data-t="count" onclick="pickType('count')">Count</div>
           <div class="type-opt" data-t="duration" onclick="pickType('duration')">Time</div>
+          <div class="type-opt" data-t="event" onclick="pickType('event')">Event</div>
         </div>
       </label>
       <div id="targetField"></div>
-      <label class="field"><span class="lbl">Length (days)</span><input type="number" id="gDays" value="30" min="1" max="365"></label>
+      <label class="field" id="daysField"><span class="lbl">Length (days)</span><input type="number" id="gDays" value="30" min="1" max="365"></label>
       <button class="btn-primary" onclick="createGoal()">${submitLabel}</button>
       <button class="btn-ghost" onclick="closeSheet()">Cancel</button>
     </div>
@@ -620,6 +798,13 @@ function pickType(t){
 }
 function renderTargetField(){
   const el = document.getElementById('targetField');
+  const daysField = document.getElementById('daysField');
+  daysField.style.display = draftType === 'event' ? 'none' : 'block';
+
+  if(draftType === 'event'){
+    el.innerHTML = `<p class="hint" style="margin-bottom:16px;">Open-ended — no fixed window. Tap "Record now" whenever it happens, and see how long it's been since the last time.</p>`;
+    return;
+  }
   if(draftType === 'boolean'){
     el.innerHTML = `<p class="hint" style="margin-bottom:16px;">You'll mark each day as done or not — good for habits like "no junk food" or "no smoking".</p>`;
     return;
