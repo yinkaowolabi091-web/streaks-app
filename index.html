@@ -824,9 +824,9 @@ function closeSheet(){
 async function createGoal(){
   const name = document.getElementById('gName').value.trim();
   if(!name){ toast('Give it a name'); return; }
-  const days = parseInt(document.getElementById('gDays').value) || 30;
+  const days = parseInt(document.getElementById('gDays')?.value) || 30;
   let target = 1, unit = '';
-  if(draftType !== 'boolean'){
+  if(draftType !== 'boolean' && draftType !== 'event'){
     target = parseFloat(document.getElementById('gTarget').value);
     if(!target || target <= 0){ toast('Enter a target'); return; }
     if(draftType === 'count') unit = document.getElementById('gUnit').value.trim();
@@ -841,7 +841,7 @@ async function createGoal(){
   } else {
     const created = await insertGoal(payload);
     if(created){
-      goals.push({ id: created.id, name, type: draftType, target, unit, days, start: created.start_date, reminder: null, log: {} });
+      goals.push({ id: created.id, name, type: draftType, target, unit, days, start: created.start_date, reminder: null, log: {}, events: [] });
     }
   }
   closeSheet();
