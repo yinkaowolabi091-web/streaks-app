@@ -48,6 +48,12 @@
   .config-warn{
     margin-top:24px; font-size:12px; color:var(--warn); max-width:300px; line-height:1.5;
   }
+  .lock-btn{
+    display:flex; align-items:center; gap:10px; justify-content:center;
+    background:var(--accent); color:#0B1410; border:none; border-radius:14px;
+    padding:14px 26px; font-size:15px; font-weight:700; font-family:var(--font);
+  }
+  .lock-btn:active{opacity:0.85;}
 
   header.top{
     position:sticky; top:0; z-index:5;
@@ -191,6 +197,149 @@ function toast(msg){
   t.textContent = msg;
   t.classList.add('show');
   setTimeout(()=> t.classList.remove('show'), 1600);
+}
+
+/* ---------------- Face ID / Touch ID app lock (WebAuthn, this device only) ---------------- */
+function isFaceLockEnabled(){
+  return localStorage.getItem('faceLockEnabled') === 'true' && !!localStorage.getItem('faceLockCredId');
+}
+function bufToB64(buf){
+  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+}
+function b64ToBuf(b64){
+  const bin = atob(b64);
+  const buf = new Uint8Array(bin.length);
+  for(let i=0; i<bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return buf.buffer;
+}
+async function enableFaceLock(){
+  if(!window.PublicKeyCredential){ toast('Face ID / Touch ID isn\'t supported in this browser'); return; }
+  try{
+    const cred = await navigator.credentials.create({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        rp: { name: 'Streaks' },
+        user: {
+          id: crypto.getRandomValues(new Uint8Array(16)),
+          name: (session && session.user.email) || 'streaks-user',
+          displayName: 'Streaks'
+        },
+        pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+        authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required' },
+        timeout: 60000
+      }
+    });
+    if(!cred) throw new Error('no credential');
+    localStorage.setItem('faceLockCredId', bufToB64(cred.rawId));
+    localStorage.setItem('faceLockEnabled', 'true');
+    unlocked = true;
+    toast('Face ID lock enabled');
+    closeSheet();
+    render();
+  } catch(err){
+    console.error(err);
+    toast('Could not set up Face ID — cancelled or unsupported');
+  }
+}
+function disableFaceLock(){
+  localStorage.removeItem('faceLockCredId');
+  localStorage.removeItem('faceLockEnabled');
+  unlocked = true;
+  toast('Face ID lock turned off');
+  closeSheet();
+  render();
+}
+async function attemptUnlock(){
+  const credIdB64 = localStorage.getItem('faceLockCredId');
+  if(!credIdB64){ unlocked = true; render(); return; }
+  try{
+    await navigator.credentials.get({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        allowCredentials: [{ id: b64ToBuf(credIdB64), type: 'public-key' }],
+        userVerification: 'required',
+        timeout: 60000
+      }
+    });
+    unlocked = true;
+    render();
+  } catch(err){
+    console.error(err);
+    toast('Face ID failed — tap Unlock to try again');
+  }
+}
+function showLockSettings(){
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-backdrop';
+  wrap.id = 'sheetBackdrop';
+  wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
+  const on = isFaceLockEnabled();
+  wrap.innerHTML = `
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <h2>App Lock</h2>
+      <p class="hint" style="font-size:13px; margin-bottom:18px;">
+        ${on
+          ? 'Face ID / Touch ID is required every time you open Streaks on this device.'
+          : 'Turn this on to require Face ID / Touch ID every time you open Streaks on this device. This only applies to this device — set it up separately on any other device.'}
+      </p>
+      ${on
+        ? `<button class="btn-danger-text" style="border:1px solid var(--line); color:var(--warn);" onclick="disableFaceLock()">Turn off Face ID lock</button>`
+        : `<button class="btn-primary" onclick="enableFaceLock()">Turn on Face ID lock</button>`}
+      <button class="btn-ghost" onclick="closeSheet()">Cancel</button>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+}
+
+function showHelp(){
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-backdrop';
+  wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
+  wrap.innerHTML = `
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <h2>How each goal type works</h2>
+
+      <div style="margin-bottom:18px;">
+        <div style="font-weight:700; color:var(--accent); margin-bottom:4px;">✓ Yes / No</div>
+        <p class="hint" style="font-size:13px; margin:0;">
+          For habits where you either did it or you didn't — nothing to count.
+          Each day you tap once to mark it done. Miss a day and your streak resets.<br>
+          <b>Example:</b> "No junk food" — tap the ring each day you stayed away from junk food.
+        </p>
+      </div>
+
+      <div style="margin-bottom:18px;">
+        <div style="font-weight:700; color:var(--accent); margin-bottom:4px;">🔢 Count</div>
+        <p class="hint" style="font-size:13px; margin:0;">
+          For goals with a daily number target. Each day you log how many you actually did.
+          Logging anything above zero keeps your streak alive — hitting the full target just gets you a brighter mark on that day.<br>
+          <b>Example:</b> "Apply to 10 jobs a day" — some days you might only manage 5, and that's still logged and still counts.
+        </p>
+      </div>
+
+      <div style="margin-bottom:18px;">
+        <div style="font-weight:700; color:var(--accent); margin-bottom:4px;">⏱ Time</div>
+        <p class="hint" style="font-size:13px; margin:0;">
+          Same idea as Count, but for a daily time target in minutes instead of a number.<br>
+          <b>Example:</b> "Work on my project for 2 hours a day" — you can set a reminder time, and log however many minutes you actually spent.
+        </p>
+      </div>
+
+      <div style="margin-bottom:6px;">
+        <div style="font-weight:700; color:var(--accent); margin-bottom:4px;">📍 Event</div>
+        <p class="hint" style="font-size:13px; margin:0;">
+          For things with no daily target or fixed end date — you just record it whenever it happens.
+          The app shows how long it's been since the last time, keeps a full timestamped history, and works out patterns like your longest and average gap between occurrences.<br>
+          <b>Example:</b> tracking a relapse, a craving, or any occasional event — record it the moment it happens, or add it later with the actual time it occurred.
+        </p>
+      </div>
+
+      <button class="btn-primary" onclick="this.closest('.sheet-backdrop').remove()">Got it</button>
+    </div>
+  `;
+  document.body.appendChild(wrap);
 }
 
 function showConfirm(message, onConfirm){
@@ -424,11 +573,25 @@ function escapeHtml(s){
 }
 
 /* ---------------- render ---------------- */
+let unlocked = !isFaceLockEnabled();
+
 function render(){
   const app = document.getElementById('app');
   if(!session) return renderAuth(app);
+  if(isFaceLockEnabled() && !unlocked) return renderLockScreen(app);
   if(view.screen === 'list') return renderList(app);
   if(view.screen === 'detail') return renderDetail(app);
+}
+
+function renderLockScreen(app){
+  app.innerHTML = `
+    <div class="auth-screen">
+      <div class="logo">🔒</div>
+      <h1>Locked</h1>
+      <p>Streaks is locked on this device. Unlock with Face ID or Touch ID to continue.</p>
+      <button class="lock-btn" onclick="attemptUnlock()">Unlock</button>
+    </div>
+  `;
 }
 
 function renderAuth(app){
@@ -492,7 +655,11 @@ function renderList(app){
         <h1>Streaks</h1>
         <p>${session.user.email || 'Signed in'}</p>
       </div>
-      <button class="signout-btn" onclick="signOut()">Sign out</button>
+      <div style="display:flex; flex-direction:column; align-items:flex-end; gap:8px; margin-top:22px;">
+        <button class="signout-btn" style="margin-top:0;" onclick="signOut()">Sign out</button>
+        <button class="signout-btn" style="margin-top:0;" onclick="showHelp()">How this works</button>
+        <button class="signout-btn" style="margin-top:0;" onclick="showLockSettings()">${isFaceLockEnabled() ? '🔒 Lock: On' : '🔓 Lock: Off'}</button>
+      </div>
     </header>
     ${cards}
     <button class="fab" onclick="openNewGoal()">+</button>
@@ -772,8 +939,11 @@ function buildSheet(title, submitLabel){
   wrap.innerHTML = `
     <div class="sheet">
       <div class="sheet-handle"></div>
-      <h2>${title}</h2>
-      <label class="field"><span class="lbl">Goal name</span><input type="text" id="gName" placeholder="e.g. Apply to jobs"></label>
+      <div style="display:flex; align-items:center; justify-content:space-between;">
+        <h2 style="margin:0;">${title}</h2>
+        <button class="edit-btn" style="margin:0;" onclick="showHelp()">What's each type?</button>
+      </div>
+      <label class="field" style="margin-top:16px;"><span class="lbl">Goal name</span><input type="text" id="gName" placeholder="e.g. Apply to jobs"></label>
       <label class="field">
         <span class="lbl">Type</span>
         <div class="type-row" id="typeRow">
