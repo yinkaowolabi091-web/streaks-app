@@ -129,6 +129,8 @@
   .stat-box .num{font-family:var(--mono); font-size:22px; font-weight:700; color:var(--accent);}
   .stat-box .lbl{font-size:11px; color:var(--text-dim); margin-top:2px; text-transform:uppercase; letter-spacing:0.05em;}
   .hint{font-size:12px; color:var(--text-faint); line-height:1.5; margin-top:4px;}
+  .finish-banner{background:var(--accent-dim); border:1px solid var(--accent); border-radius:16px; padding:18px; margin-bottom:18px; text-align:center;}
+  .finish-title{font-size:18px; font-weight:700; margin-bottom:4px;}
   .toast{position:fixed; bottom:100px; left:50%; transform:translateX(-50%); background:#242833; color:var(--text); padding:10px 18px; border-radius:20px; font-size:13px; z-index:30; opacity:0; transition:opacity 0.2s ease; border:1px solid var(--line);}
   .toast.show{opacity:1;}
   .loading{display:flex; align-items:center; justify-content:center; min-height:60vh; color:var(--text-dim); font-size:14px;}
@@ -451,7 +453,7 @@ async function loadGoals(){
     const events = (eventRows || []).filter(e => e.goal_id === g.id).map(e => ({ id: e.id, at: e.occurred_at }));
     return {
       id: g.id, name: g.name, type: g.type, target: g.target, unit: g.unit,
-      days: g.days, start: g.start_date, reminder: g.reminder_time, log, events
+      days: g.days, start: g.start_date, reminder: g.reminder_time, archived: !!g.archived, log, events
     };
   });
   view = { screen: 'list', goalId: null };
@@ -477,6 +479,10 @@ async function updateGoalRemote(id, payload){
 async function updateReminderRemote(id, reminder){
   const { error } = await sb.from('goals').update({ reminder_time: reminder }).eq('id', id);
   if(error){ toast('Could not save reminder'); console.error(error); }
+}
+async function setArchivedRemote(id, archived){
+  const { error } = await sb.from('goals').update({ archived }).eq('id', id);
+  if(error){ toast('Could not update goal'); console.error(error); }
 }
 async function deleteGoalRemote(id){
   const { error } = await sb.from('goals').delete().eq('id', id);
@@ -611,7 +617,21 @@ function renderAuth(app){
 
 function renderList(app){
   const idx0 = todayStr();
-  let cards = goals.map(g => {
+  const activeGoals = goals.filter(g => !g.archived);
+  const archivedCount = goals.length - activeGoals.length;
+
+  // today summary (day-based goals only, within their window)
+  let todayTotal = 0, todayDone = 0;
+  activeGoals.forEach(g => {
+    if(g.type === 'event') return;
+    const idx = dayIndex(g);
+    if(idx >= 0 && idx < g.days){
+      todayTotal++;
+      if(g.log[idx0] && g.log[idx0].met) todayDone++;
+    }
+  });
+
+  let cards = activeGoals.map(g => {
     if(g.type === 'event'){
       const last = g.events[0];
       const elapsed = last ? formatElapsed(Date.now() - new Date(last.at).getTime()) : 'never recorded';
@@ -626,6 +646,7 @@ function renderList(app){
     }
     const idx = dayIndex(g);
     const inWindow = idx >= 0 && idx < g.days;
+    const finished = idx >= g.days;
     const done = inWindow && g.log[idx0] && g.log[idx0].met;
     const pct = Math.min(1, completedCount(g) / g.days);
     const streak = currentStreak(g);
@@ -634,14 +655,16 @@ function renderList(app){
       <div class="ring-wrap">${ring(pct)}<div class="pct">${Math.round(pct*100)}%</div></div>
       <div class="goal-info">
         <h3>${escapeHtml(g.name)}</h3>
-        <div class="meta">${typeLabel(g)} · Day ${Math.min(idx+1, g.days)}/${g.days}</div>
+        <div class="meta">${finished ? 'Goal complete' : `${typeLabel(g)} · Day ${Math.min(idx+1, g.days)}/${g.days}`}</div>
       </div>
-      <span class="streak-pill ${streak ? '' : 'zero'}">${streak}d</span>
-      <button class="today-btn ${done ? 'done' : ''}" onclick="event.stopPropagation(); quickLog('${g.id}')">${done ? '✓' : ''}</button>
+      ${finished
+        ? `<span class="streak-pill">✓ done</span>`
+        : `<span class="streak-pill ${streak ? '' : 'zero'}">${streak}d</span>
+           <button class="today-btn ${done ? 'done' : ''}" onclick="event.stopPropagation(); quickLog('${g.id}')">${done ? '✓' : ''}</button>`}
     </div>`;
   }).join('');
 
-  if(goals.length === 0){
+  if(activeGoals.length === 0){
     cards = `<div class="empty">
       <div class="big">◎</div>
       <h2>No goals yet</h2>
@@ -653,12 +676,13 @@ function renderList(app){
     <header class="top">
       <div>
         <h1>Streaks</h1>
-        <p>${session.user.email || 'Signed in'}</p>
+        <p>${todayTotal > 0 ? `${todayDone} of ${todayTotal} done today` : (session.user.email || 'Signed in')}</p>
       </div>
       <div style="display:flex; flex-direction:column; align-items:flex-end; gap:8px; margin-top:22px;">
         <button class="signout-btn" style="margin-top:0;" onclick="signOut()">Sign out</button>
         <button class="signout-btn" style="margin-top:0;" onclick="showHelp()">How this works</button>
         <button class="signout-btn" style="margin-top:0;" onclick="showLockSettings()">${isFaceLockEnabled() ? '🔒 Lock: On' : '🔓 Lock: Off'}</button>
+        ${archivedCount > 0 ? `<button class="signout-btn" style="margin-top:0;" onclick="showArchived()">📦 Archived (${archivedCount})</button>` : ''}
       </div>
     </header>
     ${cards}
@@ -723,6 +747,8 @@ function renderDetail(app){
     cells += `<div class="${cls}" onclick="${i<=idx ? `logDay('${g.id}','${d}')` : ''}">${i+1}</div>`;
   }
 
+  const finished = idx >= g.days;
+
   app.innerHTML = `
     <header class="top" style="display:block;">
       <div class="detail-head">
@@ -732,6 +758,15 @@ function renderDetail(app){
       <h1 style="font-size:22px;">${escapeHtml(g.name)}</h1>
       <p>${typeLabel(g)}</p>
     </header>
+
+    ${finished ? `
+      <div class="finish-banner">
+        <div class="finish-title">🎉 Goal complete</div>
+        <p class="hint" style="margin-bottom:14px;">You finished all ${g.days} days — ${done} of them on target.</p>
+        <button class="btn-primary" onclick="restartGoal('${g.id}')">Start again — new ${g.days} days</button>
+        <button class="btn-ghost" onclick="archiveGoal('${g.id}')">Archive this goal</button>
+      </div>
+    ` : ''}
 
     <div class="stat-row">
       <div class="stat-box"><div class="num">${streak}</div><div class="lbl">Day streak</div></div>
@@ -745,6 +780,7 @@ function renderDetail(app){
     ${g.reminder ? `<p class="hint">⏰ Daily reminder at ${g.reminder}</p>` : ''}
 
     <button class="btn-ghost" onclick="editReminder('${g.id}')">Set daily reminder</button>
+    ${!finished ? `<button class="btn-ghost" onclick="archiveGoal('${g.id}')">Archive this goal</button>` : ''}
     <button class="btn-danger-text" onclick="deleteGoal('${g.id}')">Delete goal</button>
   `;
 }
@@ -806,7 +842,8 @@ function renderEventDetail(app, g){
     <div class="section-lbl">History</div>
     ${history}
 
-    <button class="btn-danger-text" onclick="deleteGoal('${g.id}')" style="margin-top:14px;">Delete goal</button>
+    <button class="btn-ghost" onclick="archiveGoal('${g.id}')" style="margin-top:14px;">Archive this goal</button>
+    <button class="btn-danger-text" onclick="deleteGoal('${g.id}')">Delete goal</button>
   `;
 }
 
@@ -884,16 +921,44 @@ async function logDay(gid, d){
   render();
 }
 
-async function editReminder(gid){
+function editReminder(gid){
   const g = goals.find(x => x.id === gid);
-  const val = prompt('Reminder time (24h, e.g. 14:00). Leave blank to remove.', g.reminder || '');
-  if(val === null) return;
-  g.reminder = val.trim() || null;
-  await updateReminderRemote(gid, g.reminder);
-  render();
-  if(g.reminder && 'Notification' in window && Notification.permission !== 'granted'){
-    Notification.requestPermission();
-  }
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-backdrop';
+  wrap.id = 'sheetBackdrop';
+  wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
+  wrap.innerHTML = `
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <h2>Daily reminder</h2>
+      <label class="field">
+        <span class="lbl">Time</span>
+        <input type="time" id="reminderInput" value="${g.reminder ? g.reminder.slice(0,5) : ''}">
+      </label>
+      <button class="btn-primary" id="reminderSaveBtn">Save</button>
+      ${g.reminder ? `<button class="btn-ghost" id="reminderRemoveBtn">Remove reminder</button>` : ''}
+      <button class="btn-ghost" onclick="this.closest('.sheet-backdrop').remove()">Cancel</button>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  wrap.querySelector('#reminderSaveBtn').onclick = async () => {
+    const val = document.getElementById('reminderInput').value;
+    if(!val){ toast('Pick a time'); return; }
+    g.reminder = val;
+    await updateReminderRemote(gid, g.reminder);
+    wrap.remove();
+    render();
+    if('Notification' in window && Notification.permission !== 'granted'){
+      Notification.requestPermission();
+    }
+  };
+  const removeBtn = wrap.querySelector('#reminderRemoveBtn');
+  if(removeBtn) removeBtn.onclick = async () => {
+    g.reminder = null;
+    await updateReminderRemote(gid, null);
+    wrap.remove();
+    render();
+  };
 }
 
 function deleteGoal(gid){
@@ -903,6 +968,61 @@ function deleteGoal(gid){
     backToList();
     toast('Goal deleted');
   });
+}
+
+async function archiveGoal(gid){
+  const g = goals.find(x => x.id === gid);
+  await setArchivedRemote(gid, true);
+  g.archived = true;
+  backToList();
+  toast('Goal archived');
+}
+
+async function restartGoal(gid){
+  const g = goals.find(x => x.id === gid);
+  const created = await insertGoal({ name: g.name, type: g.type, target: g.target, unit: g.unit, days: g.days });
+  if(!created) return;
+  await setArchivedRemote(gid, true);
+  g.archived = true;
+  goals.push({ id: created.id, name: g.name, type: g.type, target: g.target, unit: g.unit, days: g.days, start: created.start_date, reminder: null, archived: false, log: {}, events: [] });
+  view = { screen: 'detail', goalId: created.id };
+  render();
+  toast('New round started — old one archived');
+}
+
+function showArchived(){
+  const archived = goals.filter(g => g.archived);
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-backdrop';
+  wrap.id = 'sheetBackdrop';
+  wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
+  const rows = archived.map(g => `
+    <div class="goal-card" style="cursor:default;">
+      <div class="goal-info">
+        <h3>${escapeHtml(g.name)}</h3>
+        <div class="meta">${typeLabel(g)}</div>
+      </div>
+      <button class="edit-btn" onclick="restoreGoal('${g.id}')">Restore</button>
+    </div>
+  `).join('') || `<p class="hint">No archived goals.</p>`;
+  wrap.innerHTML = `
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <h2>Archived goals</h2>
+      ${rows}
+      <button class="btn-ghost" onclick="this.closest('.sheet-backdrop').remove()">Close</button>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+}
+
+async function restoreGoal(gid){
+  const g = goals.find(x => x.id === gid);
+  await setArchivedRemote(gid, false);
+  g.archived = false;
+  document.getElementById('sheetBackdrop')?.remove();
+  render();
+  toast('Goal restored');
 }
 
 /* ---------------- new / edit goal sheet ---------------- */
