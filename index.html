@@ -7,6 +7,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Streaks — Daily Goals</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <style>
   :root{
     --bg:#12151A;
@@ -453,7 +455,9 @@ async function loadGoals(){
     const events = (eventRows || []).filter(e => e.goal_id === g.id).map(e => ({ id: e.id, at: e.occurred_at }));
     return {
       id: g.id, name: g.name, type: g.type, target: g.target, unit: g.unit,
-      days: g.days, start: g.start_date, reminder: g.reminder_time, archived: !!g.archived, log, events
+      days: g.days, start: g.start_date, reminder: g.reminder_time,
+      period: g.period || 'day', reminderDayOfMonth: g.reminder_day_of_month || null,
+      archived: !!g.archived, log, events
     };
   });
   view = { screen: 'list', goalId: null };
@@ -464,7 +468,7 @@ async function insertGoal(payload){
   const { data, error } = await sb.from('goals').insert({
     user_id: session.user.id,
     name: payload.name, type: payload.type, target: payload.target,
-    unit: payload.unit, days: payload.days, start_date: todayStr()
+    unit: payload.unit, days: payload.days, period: payload.period || 'day', start_date: todayStr()
   }).select().single();
   if(error){ toast('Could not save goal'); console.error(error); return null; }
   return data;
@@ -472,12 +476,15 @@ async function insertGoal(payload){
 async function updateGoalRemote(id, payload){
   const { error } = await sb.from('goals').update({
     name: payload.name, type: payload.type, target: payload.target,
-    unit: payload.unit, days: payload.days
+    unit: payload.unit, days: payload.days, period: payload.period || 'day'
   }).eq('id', id);
   if(error){ toast('Could not update goal'); console.error(error); }
 }
-async function updateReminderRemote(id, reminder){
-  const { error } = await sb.from('goals').update({ reminder_time: reminder }).eq('id', id);
+async function updateReminderRemote(id, reminder, reminderDayOfMonth){
+  const { error } = await sb.from('goals').update({
+    reminder_time: reminder,
+    reminder_day_of_month: reminderDayOfMonth ?? null
+  }).eq('id', id);
   if(error){ toast('Could not save reminder'); console.error(error); }
 }
 async function setArchivedRemote(id, archived){
@@ -534,15 +541,125 @@ function formatWhen(iso){
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
+function exportGoal(gid){
+  const g = goals.find(x => x.id === gid);
+  if(!g) return;
+  if(!window.jspdf){ toast('Export isn\'t ready yet — try again in a second'); return; }
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const safeName = g.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+
+  doc.setFontSize(18);
+  doc.text(g.name, 14, 18);
+  doc.setFontSize(11);
+  doc.setTextColor(100);
+  doc.text(typeLabel(g), 14, 26);
+  doc.text(`Exported ${new Date().toLocaleDateString(undefined,{year:'numeric',month:'long',day:'numeric'})}`, 14, 32);
+
+  if(g.type === 'event'){
+    const rows = g.events.slice().reverse().map((e, i, arr) => {
+      const prev = arr[i-1];
+      const gap = prev ? formatElapsed(new Date(e.at) - new Date(prev.at)).replace(' ago','') : '—';
+      return [formatWhen(e.at), gap];
+    }).reverse();
+
+    let summaryY = 42;
+    doc.setFontSize(12); doc.setTextColor(0);
+    doc.text('Summary', 14, summaryY);
+    doc.setFontSize(10); doc.setTextColor(80);
+    summaryY += 6;
+    doc.text(`Total times recorded: ${g.events.length}`, 14, summaryY);
+    if(g.events.length >= 2){
+      const gaps = [];
+      for(let i=0; i<g.events.length-1; i++) gaps.push(new Date(g.events[i].at) - new Date(g.events[i+1].at));
+      const avg = gaps.reduce((a,b)=>a+b,0) / gaps.length;
+      summaryY += 6;
+      doc.text(`Average gap between: ${formatElapsed(avg).replace(' ago','')}`, 14, summaryY);
+      summaryY += 6;
+      doc.text(`Longest gap: ${formatElapsed(Math.max(...gaps)).replace(' ago','')}`, 14, summaryY);
+    }
+
+    doc.autoTable({
+      startY: summaryY + 10,
+      head: [['Recorded at', 'Gap since previous']],
+      body: rows.length ? rows : [['No records yet', '']],
+      styles: { fontSize: 9 },
+      headStyles: { fillColor: [95, 217, 138], textColor: [10,20,15] }
+    });
+  } else {
+    const per = g.period === 'month' ? 'Month' : 'Day';
+    const entries = [];
+    for(let i=0; i<g.days; i++){
+      const key = periodKey(g, i);
+      const label = g.period === 'month'
+        ? new Date(key+'T00:00:00').toLocaleDateString(undefined,{month:'long', year:'numeric'})
+        : new Date(key+'T00:00:00').toLocaleDateString(undefined,{weekday:'short', month:'short', day:'numeric'});
+      const entry = g.log[key];
+      let status, valueCol;
+      if(!entry){ status = i <= dayIndex(g) ? 'Missed' : '—'; valueCol = ''; }
+      else if(g.type === 'boolean'){ status = entry.met ? 'Done' : 'Missed'; valueCol = ''; }
+      else { valueCol = String(entry.value); status = entry.fullyMet ? 'Target hit' : entry.met ? 'Logged' : 'Missed'; }
+      entries.push([`${per} ${i+1} · ${label}`, valueCol, status]);
+    }
+
+    let summaryY = 42;
+    doc.setFontSize(12); doc.setTextColor(0);
+    doc.text('Summary', 14, summaryY);
+    doc.setFontSize(10); doc.setTextColor(80);
+    summaryY += 6;
+    doc.text(`${per}s completed: ${completedCount(g)} / ${g.days}`, 14, summaryY);
+    summaryY += 6;
+    doc.text(`Current streak: ${currentStreak(g)} ${per.toLowerCase()}${currentStreak(g) !== 1 ? 's' : ''}`, 14, summaryY);
+    if(g.type === 'count' || g.type === 'duration'){
+      const total = Object.values(g.log).reduce((sum, v) => sum + (v.value || 0), 0);
+      summaryY += 6;
+      doc.text(`Total ${g.unit || (g.type === 'duration' ? 'minutes' : '')} logged: ${total}`, 14, summaryY);
+    }
+
+    doc.autoTable({
+      startY: summaryY + 10,
+      head: [[per, g.type === 'boolean' ? '' : (g.type === 'duration' ? 'Minutes' : (g.unit || 'Count')), 'Status']],
+      body: entries,
+      styles: { fontSize: 9 },
+      headStyles: { fillColor: [95, 217, 138], textColor: [10,20,15] }
+    });
+  }
+
+  doc.save(`${safeName}-export.pdf`);
+  toast('PDF downloaded');
+}
+
 /* ---------------- date helpers ---------------- */
 function todayStr(){ return new Date().toISOString().slice(0,10); }
+function periodKey(goal, offset){
+  const start = new Date(goal.start + 'T00:00:00');
+  if(goal.period === 'month'){
+    const d = new Date(start.getFullYear(), start.getMonth() + offset, 1);
+    return d.toISOString().slice(0,7) + '-01'; // first-of-month as the log key
+  }
+  const d = new Date(start);
+  d.setDate(d.getDate() + offset);
+  return d.toISOString().slice(0,10);
+}
 function dateAt(startStr, offset){
   const d = new Date(startStr + 'T00:00:00');
   d.setDate(d.getDate() + offset);
   return d.toISOString().slice(0,10);
 }
+function currentPeriodKey(goal){
+  if(goal.period === 'month'){
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0,10);
+  }
+  return todayStr();
+}
 function dayIndex(goal){
   const start = new Date(goal.start + 'T00:00:00');
+  if(goal.period === 'month'){
+    const now = new Date();
+    return (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
+  }
   const now = new Date(todayStr() + 'T00:00:00');
   return Math.floor((now - start) / 86400000);
 }
@@ -551,7 +668,7 @@ function currentStreak(goal){
   let streak = 0;
   const idx = dayIndex(goal);
   for(let i = Math.min(idx, goal.days - 1); i >= 0; i--){
-    const d = dateAt(goal.start, i);
+    const d = periodKey(goal, i);
     if(goal.log[d] && goal.log[d].met){ streak++; } else { break; }
   }
   return streak;
@@ -567,10 +684,11 @@ function ring(pct, size=56, stroke=5){
   </svg>`;
 }
 function typeLabel(goal){
-  if(goal.type === 'count') return `${goal.target} ${goal.unit || 'x'} / day`;
-  if(goal.type === 'duration') return `${goal.target} min / day`;
+  const per = goal.period === 'month' ? 'month' : 'day';
+  if(goal.type === 'count') return `${goal.target} ${goal.unit || 'x'} / ${per}`;
+  if(goal.type === 'duration') return `${goal.target} min / ${per}`;
   if(goal.type === 'event') return 'Time-since tracker';
-  return 'Daily check-in';
+  return goal.period === 'month' ? 'Monthly check-in' : 'Daily check-in';
 }
 function escapeHtml(s){
   const d = document.createElement('div');
@@ -616,18 +734,18 @@ function renderAuth(app){
 }
 
 function renderList(app){
-  const idx0 = todayStr();
   const activeGoals = goals.filter(g => !g.archived);
   const archivedCount = goals.length - activeGoals.length;
 
-  // today summary (day-based goals only, within their window)
+  // today/this-month summary (goals within their active window)
   let todayTotal = 0, todayDone = 0;
   activeGoals.forEach(g => {
     if(g.type === 'event') return;
     const idx = dayIndex(g);
     if(idx >= 0 && idx < g.days){
       todayTotal++;
-      if(g.log[idx0] && g.log[idx0].met) todayDone++;
+      const key = currentPeriodKey(g);
+      if(g.log[key] && g.log[key].met) todayDone++;
     }
   });
 
@@ -647,7 +765,8 @@ function renderList(app){
     const idx = dayIndex(g);
     const inWindow = idx >= 0 && idx < g.days;
     const finished = idx >= g.days;
-    const done = inWindow && g.log[idx0] && g.log[idx0].met;
+    const key = currentPeriodKey(g);
+    const done = inWindow && g.log[key] && g.log[key].met;
     const pct = Math.min(1, completedCount(g) / g.days);
     const streak = currentStreak(g);
     return `
@@ -655,7 +774,7 @@ function renderList(app){
       <div class="ring-wrap">${ring(pct)}<div class="pct">${Math.round(pct*100)}%</div></div>
       <div class="goal-info">
         <h3>${escapeHtml(g.name)}</h3>
-        <div class="meta">${finished ? 'Goal complete' : `${typeLabel(g)} · Day ${Math.min(idx+1, g.days)}/${g.days}`}</div>
+        <div class="meta">${finished ? 'Goal complete' : `${typeLabel(g)} · ${g.period === 'month' ? 'Month' : 'Day'} ${Math.min(idx+1, g.days)}/${g.days}`}</div>
       </div>
       ${finished
         ? `<span class="streak-pill">✓ done</span>`
@@ -692,7 +811,7 @@ function renderList(app){
 
 async function quickLog(id){
   const g = goals.find(x => x.id === id);
-  const d = todayStr();
+  const d = currentPeriodKey(g);
   const idx = dayIndex(g);
   if(idx < 0 || idx >= g.days){ toast('Outside the goal window'); return; }
 
@@ -705,7 +824,7 @@ async function quickLog(id){
     } else {
       g.log[d] = { met: true, value: 1 };
       await upsertLog(g.id, d, true, 1);
-      toast('Nice — logged for today');
+      toast(g.period === 'month' ? 'Nice — logged for this month' : 'Nice — logged for today');
     }
     render();
     return;
@@ -713,7 +832,7 @@ async function quickLog(id){
   const unitWord = g.type === 'duration' ? 'minutes' : (g.unit || 'count');
   const existing = g.log[d] ? g.log[d].value : '';
   showNumberEntry({
-    title: 'How many today?', goalName: g.name, target: g.target, unitWord, existing,
+    title: g.period === 'month' ? 'How many this month?' : 'How many today?', goalName: g.name, target: g.target, unitWord, existing,
     onSave: async (num) => {
       const met = num > 0;
       const fullyMet = num >= g.target;
@@ -736,18 +855,39 @@ function renderDetail(app){
   const idx = dayIndex(g);
   const streak = currentStreak(g);
   const done = completedCount(g);
+  const periodWord = g.period === 'month' ? 'Month' : 'Day';
+  const periodWordLower = g.period === 'month' ? 'month' : 'day';
 
   let cells = '';
   for(let i=0; i<g.days; i++){
-    const d = dateAt(g.start, i);
+    const d = periodKey(g, i);
     let cls = 'day-cell';
     if(i === idx) cls += ' today';
     if(i > idx) cls += ' future';
     if(g.log[d]) cls += g.log[d].met ? (g.log[d].fullyMet ? ' done' : ' partial') : ' miss';
-    cells += `<div class="${cls}" onclick="${i<=idx ? `logDay('${g.id}','${d}')` : ''}">${i+1}</div>`;
+    const showValue = (g.type === 'count' || g.type === 'duration') && g.log[d] && g.log[d].value != null;
+    const cellLabel = showValue ? g.log[d].value : (i+1);
+    const titleAttr = showValue ? ` title="${typeLabel(g)} — logged ${g.log[d].value}"` : '';
+    cells += `<div class="${cls}"${titleAttr} onclick="${i<=idx ? `logDay('${g.id}','${d}')` : ''}">${cellLabel}</div>`;
   }
 
   const finished = idx >= g.days;
+
+  // full record list for count/duration goals — every logged value, most recent first
+  let logListHtml = '';
+  if(g.type === 'count' || g.type === 'duration'){
+    const entries = Object.entries(g.log).sort((a,b) => b[0].localeCompare(a[0]));
+    if(entries.length){
+      const unitWord = g.type === 'duration' ? 'min' : (g.unit || '');
+      const rows = entries.map(([date, v]) => {
+        const label = g.period === 'month' ? new Date(date+'T00:00:00').toLocaleDateString(undefined,{month:'long', year:'numeric'}) : new Date(date+'T00:00:00').toLocaleDateString(undefined,{weekday:'short', month:'short', day:'numeric'});
+        return `<div class="hist-item">
+          <div><div class="when">${label}</div><div class="gap">${v.value} ${unitWord} ${v.fullyMet ? '· target hit' : v.met ? '· logged' : '· below target'}</div></div>
+        </div>`;
+      }).join('');
+      logListHtml = `<div class="section-lbl">Full record</div>${rows}`;
+    }
+  }
 
   app.innerHTML = `
     <header class="top" style="display:block;">
@@ -762,24 +902,28 @@ function renderDetail(app){
     ${finished ? `
       <div class="finish-banner">
         <div class="finish-title">🎉 Goal complete</div>
-        <p class="hint" style="margin-bottom:14px;">You finished all ${g.days} days — ${done} of them on target.</p>
-        <button class="btn-primary" onclick="restartGoal('${g.id}')">Start again — new ${g.days} days</button>
+        <p class="hint" style="margin-bottom:14px;">You finished all ${g.days} ${periodWordLower}s — ${done} of them on target.</p>
+        <button class="btn-primary" onclick="restartGoal('${g.id}')">Start again — new ${g.days} ${periodWordLower}s</button>
         <button class="btn-ghost" onclick="archiveGoal('${g.id}')">Archive this goal</button>
       </div>
     ` : ''}
 
     <div class="stat-row">
-      <div class="stat-box"><div class="num">${streak}</div><div class="lbl">Day streak</div></div>
+      <div class="stat-box"><div class="num">${streak}</div><div class="lbl">${periodWord} streak</div></div>
       <div class="stat-box"><div class="num">${done}/${g.days}</div><div class="lbl">Completed</div></div>
       <div class="stat-box"><div class="num">${Math.min(idx+1,g.days)}/${g.days}</div><div class="lbl">Elapsed</div></div>
     </div>
 
     <div class="day-grid">${cells}</div>
-    <p class="hint">Tap any past or current day to log or edit it.</p>
+    <p class="hint">Tap any past or current ${periodWordLower} to log or edit it.${(g.type === 'count' || g.type === 'duration') ? ` Numbers on filled cells are what you actually logged that ${periodWordLower}.` : ''}</p>
 
-    ${g.reminder ? `<p class="hint">⏰ Daily reminder at ${g.reminder}</p>` : ''}
+    <button class="btn-ghost" onclick="exportGoal('${g.id}')">⬇ Download this goal's data</button>
 
-    <button class="btn-ghost" onclick="editReminder('${g.id}')">Set daily reminder</button>
+    ${logListHtml}
+
+    ${g.reminder ? `<p class="hint">⏰ ${g.period === 'month' ? `Reminder on day ${g.reminderDayOfMonth || 1} of each month at ${g.reminder}` : `Daily reminder at ${g.reminder}`}</p>` : ''}
+
+    <button class="btn-ghost" onclick="editReminder('${g.id}')">Set ${periodWordLower === 'month' ? 'monthly' : 'daily'} reminder</button>
     ${!finished ? `<button class="btn-ghost" onclick="archiveGoal('${g.id}')">Archive this goal</button>` : ''}
     <button class="btn-danger-text" onclick="deleteGoal('${g.id}')">Delete goal</button>
   `;
@@ -842,7 +986,8 @@ function renderEventDetail(app, g){
     <div class="section-lbl">History</div>
     ${history}
 
-    <button class="btn-ghost" onclick="archiveGoal('${g.id}')" style="margin-top:14px;">Archive this goal</button>
+    <button class="btn-ghost" onclick="exportGoal('${g.id}')">⬇ Download this goal's data</button>
+    <button class="btn-ghost" onclick="archiveGoal('${g.id}')">Archive this goal</button>
     <button class="btn-danger-text" onclick="deleteGoal('${g.id}')">Delete goal</button>
   `;
 }
@@ -923,6 +1068,7 @@ async function logDay(gid, d){
 
 function editReminder(gid){
   const g = goals.find(x => x.id === gid);
+  const isMonthly = g.period === 'month';
   const wrap = document.createElement('div');
   wrap.className = 'sheet-backdrop';
   wrap.id = 'sheetBackdrop';
@@ -930,7 +1076,13 @@ function editReminder(gid){
   wrap.innerHTML = `
     <div class="sheet">
       <div class="sheet-handle"></div>
-      <h2>Daily reminder</h2>
+      <h2>${isMonthly ? 'Monthly reminder' : 'Daily reminder'}</h2>
+      ${isMonthly ? `
+      <label class="field">
+        <span class="lbl">Day of month</span>
+        <input type="number" id="reminderDayInput" min="1" max="28" value="${g.reminderDayOfMonth || 1}">
+        <p class="hint">Pick 1–28 so it works in every month.</p>
+      </label>` : ''}
       <label class="field">
         <span class="lbl">Time</span>
         <input type="time" id="reminderInput" value="${g.reminder ? g.reminder.slice(0,5) : ''}">
@@ -944,8 +1096,14 @@ function editReminder(gid){
   wrap.querySelector('#reminderSaveBtn').onclick = async () => {
     const val = document.getElementById('reminderInput').value;
     if(!val){ toast('Pick a time'); return; }
+    let dayOfMonth = null;
+    if(isMonthly){
+      dayOfMonth = parseInt(document.getElementById('reminderDayInput').value) || 1;
+      dayOfMonth = Math.min(28, Math.max(1, dayOfMonth));
+    }
     g.reminder = val;
-    await updateReminderRemote(gid, g.reminder);
+    g.reminderDayOfMonth = dayOfMonth;
+    await updateReminderRemote(gid, g.reminder, dayOfMonth);
     wrap.remove();
     render();
     if('Notification' in window && Notification.permission !== 'granted'){
@@ -955,7 +1113,8 @@ function editReminder(gid){
   const removeBtn = wrap.querySelector('#reminderRemoveBtn');
   if(removeBtn) removeBtn.onclick = async () => {
     g.reminder = null;
-    await updateReminderRemote(gid, null);
+    g.reminderDayOfMonth = null;
+    await updateReminderRemote(gid, null, null);
     wrap.remove();
     render();
   };
@@ -1027,10 +1186,12 @@ async function restoreGoal(gid){
 
 /* ---------------- new / edit goal sheet ---------------- */
 let draftType = 'boolean';
+let draftPeriod = 'day';
 let editingGoalId = null;
 function openNewGoal(){
   editingGoalId = null;
   draftType = 'boolean';
+  draftPeriod = 'day';
   buildSheet('New goal', 'Start goal');
   renderTargetField();
 }
@@ -1039,10 +1200,12 @@ function editGoal(id){
   if(!g) return;
   editingGoalId = id;
   draftType = g.type;
+  draftPeriod = g.period || 'day';
   buildSheet('Edit goal', 'Save changes');
   document.getElementById('gName').value = g.name;
   document.getElementById('gDays').value = g.days;
   document.querySelectorAll('.type-opt').forEach(el => el.classList.toggle('sel', el.dataset.t === g.type));
+  document.querySelectorAll('.period-opt').forEach(el => el.classList.toggle('sel', el.dataset.p === draftPeriod));
   renderTargetField();
   if(g.type === 'count'){
     document.getElementById('gTarget').value = g.target;
@@ -1073,8 +1236,15 @@ function buildSheet(title, submitLabel){
           <div class="type-opt" data-t="event" onclick="pickType('event')">Event</div>
         </div>
       </label>
+      <label class="field" id="periodField">
+        <span class="lbl">Check in every</span>
+        <div class="type-row">
+          <div class="type-opt period-opt sel" data-p="day" onclick="pickPeriod('day')">Day</div>
+          <div class="type-opt period-opt" data-p="month" onclick="pickPeriod('month')">Month</div>
+        </div>
+      </label>
       <div id="targetField"></div>
-      <label class="field" id="daysField"><span class="lbl">Length (days)</span><input type="number" id="gDays" value="30" min="1" max="365"></label>
+      <label class="field" id="daysField"><span class="lbl" id="daysLbl">Length (days)</span><input type="number" id="gDays" value="30" min="1" max="365"></label>
       <button class="btn-primary" onclick="createGoal()">${submitLabel}</button>
       <button class="btn-ghost" onclick="closeSheet()">Cancel</button>
     </div>
@@ -1083,29 +1253,40 @@ function buildSheet(title, submitLabel){
 }
 function pickType(t){
   draftType = t;
-  document.querySelectorAll('.type-opt').forEach(el => el.classList.toggle('sel', el.dataset.t === t));
+  document.querySelectorAll('.type-opt[data-t]').forEach(el => el.classList.toggle('sel', el.dataset.t === t));
+  document.getElementById('periodField').style.display = t === 'event' ? 'none' : 'block';
+  renderTargetField();
+}
+function pickPeriod(p){
+  draftPeriod = p;
+  document.querySelectorAll('.period-opt').forEach(el => el.classList.toggle('sel', el.dataset.p === p));
   renderTargetField();
 }
 function renderTargetField(){
   const el = document.getElementById('targetField');
   const daysField = document.getElementById('daysField');
+  const daysLbl = document.getElementById('daysLbl');
   daysField.style.display = draftType === 'event' ? 'none' : 'block';
+  daysLbl.textContent = draftPeriod === 'month' ? 'Length (months)' : 'Length (days)';
+  document.getElementById('gDays').max = draftPeriod === 'month' ? 60 : 365;
+
+  const per = draftPeriod === 'month' ? 'month' : 'day';
 
   if(draftType === 'event'){
     el.innerHTML = `<p class="hint" style="margin-bottom:16px;">Open-ended — no fixed window. Tap "Record now" whenever it happens, and see how long it's been since the last time.</p>`;
     return;
   }
   if(draftType === 'boolean'){
-    el.innerHTML = `<p class="hint" style="margin-bottom:16px;">You'll mark each day as done or not — good for habits like "no junk food" or "no smoking".</p>`;
+    el.innerHTML = `<p class="hint" style="margin-bottom:16px;">You'll mark each ${per} as done or not — good for habits like "no junk food", or something you do once a month like "fast on the 1st".</p>`;
     return;
   }
   if(draftType === 'count'){
     el.innerHTML = `
-      <label class="field"><span class="lbl">Daily target</span><div class="target-row"><input type="number" id="gTarget" placeholder="10" min="1"><span>per day</span></div></label>
+      <label class="field"><span class="lbl">Target per ${per}</span><div class="target-row"><input type="number" id="gTarget" placeholder="10" min="1"><span>per ${per}</span></div></label>
       <label class="field"><span class="lbl">Unit (optional)</span><input type="text" id="gUnit" placeholder="jobs, pages, calls..."></label>`;
     return;
   }
-  el.innerHTML = `<label class="field"><span class="lbl">Daily target</span><div class="target-row"><input type="number" id="gTarget" placeholder="120" min="1"><span>minutes</span></div></label>`;
+  el.innerHTML = `<label class="field"><span class="lbl">Target per ${per}</span><div class="target-row"><input type="number" id="gTarget" placeholder="120" min="1"><span>minutes</span></div></label>`;
 }
 function closeSheet(){
   const el = document.getElementById('sheetBackdrop');
@@ -1114,14 +1295,15 @@ function closeSheet(){
 async function createGoal(){
   const name = document.getElementById('gName').value.trim();
   if(!name){ toast('Give it a name'); return; }
-  const days = parseInt(document.getElementById('gDays')?.value) || 30;
+  const days = parseInt(document.getElementById('gDays')?.value) || (draftPeriod === 'month' ? 12 : 30);
   let target = 1, unit = '';
   if(draftType !== 'boolean' && draftType !== 'event'){
     target = parseFloat(document.getElementById('gTarget').value);
     if(!target || target <= 0){ toast('Enter a target'); return; }
     if(draftType === 'count') unit = document.getElementById('gUnit').value.trim();
   }
-  const payload = { name, type: draftType, target, unit, days };
+  const period = draftType === 'event' ? 'day' : draftPeriod;
+  const payload = { name, type: draftType, target, unit, days, period };
 
   if(editingGoalId){
     await updateGoalRemote(editingGoalId, payload);
@@ -1131,7 +1313,7 @@ async function createGoal(){
   } else {
     const created = await insertGoal(payload);
     if(created){
-      goals.push({ id: created.id, name, type: draftType, target, unit, days, start: created.start_date, reminder: null, log: {}, events: [] });
+      goals.push({ id: created.id, name, type: draftType, target, unit, days, period, start: created.start_date, reminder: null, reminderDayOfMonth: null, log: {}, events: [] });
     }
   }
   closeSheet();
@@ -1142,13 +1324,14 @@ async function createGoal(){
 setInterval(() => {
   const now = new Date();
   const hhmm = now.toTimeString().slice(0,5);
-  const d = todayStr();
   goals.forEach(g => {
-    if(g.reminder && g.reminder.slice(0,5) === hhmm){
-      const already = g.log[d] && g.log[d].met;
-      if(!already && 'Notification' in window && Notification.permission === 'granted'){
-        new Notification('Streaks', { body: `Time for: ${g.name}` });
-      }
+    if(g.archived || g.type === 'event' || !g.reminder) return;
+    if(g.reminder.slice(0,5) !== hhmm) return;
+    if(g.period === 'month' && now.getDate() !== (g.reminderDayOfMonth || 1)) return;
+    const key = currentPeriodKey(g);
+    const already = g.log[key] && g.log[key].met;
+    if(!already && 'Notification' in window && Notification.permission === 'granted'){
+      new Notification('Streaks', { body: `Time for: ${g.name}` });
     }
   });
 }, 30000);
