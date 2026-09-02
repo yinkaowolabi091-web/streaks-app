@@ -66,6 +66,18 @@
   header.top h1{font-size:28px; font-weight:700; letter-spacing:-0.02em; margin:0;}
   header.top p{margin:4px 0 0; color:var(--text-dim); font-size:14px;}
   .signout-btn{background:none; border:1px solid var(--line); color:var(--text-dim); font-size:12px; padding:7px 12px; border-radius:20px; margin-top:22px; white-space:nowrap;}
+  .menu-btn{
+    flex:none; width:38px; height:38px; border-radius:50%; margin-top:22px;
+    background:var(--card); border:1px solid var(--line); color:var(--text-dim);
+    font-size:20px; line-height:1; display:flex; align-items:center; justify-content:center;
+  }
+  .menu-btn:active{background:var(--card-hi);}
+  .list-group{background:var(--card); border:1px solid var(--line); border-radius:14px; overflow:hidden; margin-bottom:14px;}
+  .list-row{display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid var(--line); font-size:14px;}
+  .list-row:last-child{border-bottom:none;}
+  .list-row .label{color:var(--text);}
+  .list-row .value{color:var(--text-dim); font-size:13px;}
+  .list-row .chev{color:var(--text-faint); font-size:15px;}
 
   .empty{ text-align:center; padding:60px 20px; color:var(--text-dim); }
   .empty .big{font-size:40px; margin-bottom:6px;}
@@ -797,16 +809,38 @@ function renderList(app){
         <h1>Streaks</h1>
         <p>${todayTotal > 0 ? `${todayDone} of ${todayTotal} done today` : (session.user.email || 'Signed in')}</p>
       </div>
-      <div style="display:flex; flex-direction:column; align-items:flex-end; gap:8px; margin-top:22px;">
-        <button class="signout-btn" style="margin-top:0;" onclick="signOut()">Sign out</button>
-        <button class="signout-btn" style="margin-top:0;" onclick="showHelp()">How this works</button>
-        <button class="signout-btn" style="margin-top:0;" onclick="showLockSettings()">${isFaceLockEnabled() ? '🔒 Lock: On' : '🔓 Lock: Off'}</button>
-        ${archivedCount > 0 ? `<button class="signout-btn" style="margin-top:0;" onclick="showArchived()">📦 Archived (${archivedCount})</button>` : ''}
-      </div>
+      <button class="menu-btn" onclick="showMainMenu()" aria-label="Menu">⋯</button>
     </header>
     ${cards}
     <button class="fab" onclick="openNewGoal()">+</button>
   `;
+}
+
+function showMainMenu(){
+  const archivedCount = goals.filter(g => g.archived).length;
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-backdrop';
+  wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
+  wrap.innerHTML = `
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <div class="list-group">
+        <div class="list-row" onclick="this.closest('.sheet-backdrop').remove(); showHelp();">
+          <span class="label">How this works</span><span class="chev">›</span>
+        </div>
+        <div class="list-row" onclick="this.closest('.sheet-backdrop').remove(); showLockSettings();">
+          <span class="label">Face ID lock</span><span class="value">${isFaceLockEnabled() ? 'On ›' : 'Off ›'}</span>
+        </div>
+        ${archivedCount > 0 ? `
+        <div class="list-row" onclick="this.closest('.sheet-backdrop').remove(); showArchived();">
+          <span class="label">Archived goals</span><span class="value">${archivedCount} ›</span>
+        </div>` : ''}
+      </div>
+      <button class="btn-ghost" style="color:var(--warn); border-color:#402828;" onclick="signOut()">Sign out</button>
+      <button class="btn-ghost" onclick="this.closest('.sheet-backdrop').remove()">Close</button>
+    </div>
+  `;
+  document.body.appendChild(wrap);
 }
 
 async function quickLog(id){
@@ -917,14 +951,22 @@ function renderDetail(app){
     <div class="day-grid">${cells}</div>
     <p class="hint">Tap any past or current ${periodWordLower} to log or edit it.${(g.type === 'count' || g.type === 'duration') ? ` Numbers on filled cells are what you actually logged that ${periodWordLower}.` : ''}</p>
 
-    <button class="btn-ghost" onclick="exportGoal('${g.id}')">⬇ Download this goal's data</button>
+    <div class="list-group" style="margin-top:18px;">
+      <div class="list-row" onclick="editReminder('${g.id}')">
+        <span class="label">Reminder</span>
+        <span class="value">${g.reminder ? `${g.period === 'month' ? `Day ${g.reminderDayOfMonth || 1}, ` : ''}${g.reminder} ›` : 'Off ›'}</span>
+      </div>
+      <div class="list-row" onclick="exportGoal('${g.id}')">
+        <span class="label">Download data (PDF)</span><span class="chev">›</span>
+      </div>
+      ${!finished ? `
+      <div class="list-row" onclick="archiveGoal('${g.id}')">
+        <span class="label">Archive this goal</span><span class="chev">›</span>
+      </div>` : ''}
+    </div>
 
     ${logListHtml}
 
-    ${g.reminder ? `<p class="hint">⏰ ${g.period === 'month' ? `Reminder on day ${g.reminderDayOfMonth || 1} of each month at ${g.reminder}` : `Daily reminder at ${g.reminder}`}</p>` : ''}
-
-    <button class="btn-ghost" onclick="editReminder('${g.id}')">Set ${periodWordLower === 'month' ? 'monthly' : 'daily'} reminder</button>
-    ${!finished ? `<button class="btn-ghost" onclick="archiveGoal('${g.id}')">Archive this goal</button>` : ''}
     <button class="btn-danger-text" onclick="deleteGoal('${g.id}')">Delete goal</button>
   `;
 }
@@ -986,8 +1028,14 @@ function renderEventDetail(app, g){
     <div class="section-lbl">History</div>
     ${history}
 
-    <button class="btn-ghost" onclick="exportGoal('${g.id}')">⬇ Download this goal's data</button>
-    <button class="btn-ghost" onclick="archiveGoal('${g.id}')">Archive this goal</button>
+    <div class="list-group">
+      <div class="list-row" onclick="exportGoal('${g.id}')">
+        <span class="label">Download data (PDF)</span><span class="chev">›</span>
+      </div>
+      <div class="list-row" onclick="archiveGoal('${g.id}')">
+        <span class="label">Archive this goal</span><span class="chev">›</span>
+      </div>
+    </div>
     <button class="btn-danger-text" onclick="deleteGoal('${g.id}')">Delete goal</button>
   `;
 }
