@@ -208,11 +208,20 @@ let session = null;
 let goals = [];           // [{id, name, type, target, unit, days, start_date, reminder_time, log:{date:{met,value}}}]
 let view = { screen: 'list', goalId: null };
 
-function toast(msg){
+function toast(msg, duration=1600){
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.classList.add('show');
-  setTimeout(()=> t.classList.remove('show'), 1600);
+  clearTimeout(t._hideTimer);
+  t._hideTimer = setTimeout(()=> t.classList.remove('show'), duration);
+}
+
+const STREAK_MILESTONES = [7, 14, 30, 50, 100, 200, 365];
+function celebrateIfMilestone(goal, streak){
+  if(STREAK_MILESTONES.includes(streak)){
+    const per = goal.period === 'month' ? (streak === 1 ? 'month' : 'months') : (streak === 1 ? 'day' : 'days');
+    toast(`🔥 ${streak}-${goal.period === 'month' ? 'month' : 'day'} streak on "${goal.name}"!`, 3200);
+  }
 }
 
 /* ---------------- Face ID / Touch ID app lock (WebAuthn, this device only) ---------------- */
@@ -553,16 +562,8 @@ function formatWhen(iso){
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
-function exportGoal(gid){
-  const g = goals.find(x => x.id === gid);
-  if(!g) return;
-  if(!window.jspdf){ toast('Export isn\'t ready yet — try again in a second'); return; }
-
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF();
-  const safeName = g.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
-
-  doc.setFontSize(18);
+function drawGoalPage(doc, g){
+  doc.setFontSize(18); doc.setTextColor(0);
   doc.text(g.name, 14, 18);
   doc.setFontSize(11);
   doc.setTextColor(100);
@@ -637,9 +638,31 @@ function exportGoal(gid){
       headStyles: { fillColor: [95, 217, 138], textColor: [10,20,15] }
     });
   }
+}
 
+function exportGoal(gid){
+  const g = goals.find(x => x.id === gid);
+  if(!g) return;
+  if(!window.jspdf){ toast('Export isn\'t ready yet — try again in a second'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const safeName = g.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+  drawGoalPage(doc, g);
   doc.save(`${safeName}-export.pdf`);
   toast('PDF downloaded');
+}
+
+function exportAllGoals(){
+  if(!window.jspdf){ toast('Export isn\'t ready yet — try again in a second'); return; }
+  if(goals.length === 0){ toast('No goals to export yet'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  goals.forEach((g, i) => {
+    if(i > 0) doc.addPage();
+    drawGoalPage(doc, g);
+  });
+  doc.save(`streaks-full-backup-${todayStr()}.pdf`);
+  toast('Backup downloaded');
 }
 
 /* ---------------- date helpers ---------------- */
@@ -717,6 +740,7 @@ function render(){
   if(isFaceLockEnabled() && !unlocked) return renderLockScreen(app);
   if(view.screen === 'list') return renderList(app);
   if(view.screen === 'detail') return renderDetail(app);
+  if(view.screen === 'overview') return renderOverview(app);
 }
 
 function renderLockScreen(app){
@@ -825,6 +849,12 @@ function showMainMenu(){
     <div class="sheet">
       <div class="sheet-handle"></div>
       <div class="list-group">
+        <div class="list-row" onclick="this.closest('.sheet-backdrop').remove(); openOverview();">
+          <span class="label">Overview</span><span class="chev">›</span>
+        </div>
+        <div class="list-row" onclick="this.closest('.sheet-backdrop').remove(); exportAllGoals();">
+          <span class="label">Download full backup (PDF)</span><span class="chev">›</span>
+        </div>
         <div class="list-row" onclick="this.closest('.sheet-backdrop').remove(); showHelp();">
           <span class="label">How this works</span><span class="chev">›</span>
         </div>
@@ -858,7 +888,9 @@ async function quickLog(id){
     } else {
       g.log[d] = { met: true, value: 1 };
       await upsertLog(g.id, d, true, 1);
-      toast(g.period === 'month' ? 'Nice — logged for this month' : 'Nice — logged for today');
+      const streak = currentStreak(g);
+      if(STREAK_MILESTONES.includes(streak)) celebrateIfMilestone(g, streak);
+      else toast(g.period === 'month' ? 'Nice — logged for this month' : 'Nice — logged for today');
     }
     render();
     return;
@@ -873,13 +905,81 @@ async function quickLog(id){
       g.log[d] = { met, fullyMet, value: num };
       await upsertLog(g.id, d, met, num);
       render();
-      toast(fullyMet ? 'Target hit — logged' : met ? `Logged ${num} — counts toward your streak` : 'Logged as not done today');
+      const streak = currentStreak(g);
+      if(met && STREAK_MILESTONES.includes(streak)) celebrateIfMilestone(g, streak);
+      else toast(fullyMet ? 'Target hit — logged' : met ? `Logged ${num} — counts toward your streak` : 'Logged as not done today');
     }
   });
 }
 
 function openDetail(id){ view = { screen:'detail', goalId:id }; render(); }
 function backToList(){ view = { screen:'list', goalId:null }; render(); }
+function openOverview(){ view = { screen:'overview', goalId:null }; render(); }
+
+function renderOverview(app){
+  const active = goals.filter(g => !g.archived);
+  const idx0 = todayStr();
+  const nowMonth = todayStr().slice(0,7);
+
+  // today summary
+  let todayTotal = 0, todayDone = 0;
+  active.forEach(g => {
+    if(g.type === 'event') return;
+    const idx = dayIndex(g);
+    if(idx >= 0 && idx < g.days && g.period !== 'month'){
+      todayTotal++;
+      if(g.log[idx0] && g.log[idx0].met) todayDone++;
+    }
+  });
+
+  // this month totals for count/duration goals
+  const monthRows = active.filter(g => g.type === 'count' || g.type === 'duration').map(g => {
+    let total = 0;
+    if(g.period === 'month'){
+      const key = currentPeriodKey(g);
+      total = g.log[key] ? g.log[key].value : 0;
+    } else {
+      Object.entries(g.log).forEach(([date, entry]) => {
+        if(date.slice(0,7) === nowMonth) total += (entry.value || 0);
+      });
+    }
+    return { name: g.name, total, unit: g.type === 'duration' ? 'min' : (g.unit || '') };
+  }).filter(r => r.total > 0);
+
+  // streak leaderboard
+  const streakRows = active
+    .filter(g => g.type !== 'event')
+    .map(g => ({ id: g.id, name: g.name, streak: currentStreak(g), period: g.period }))
+    .sort((a,b) => b.streak - a.streak);
+
+  app.innerHTML = `
+    <header class="top" style="display:block;">
+      <div class="detail-head">
+        <button class="back-btn" onclick="backToList()"><span class="arrow">‹</span> Back</button>
+      </div>
+      <h1 style="font-size:22px;">Overview</h1>
+    </header>
+
+    <div class="stat-row">
+      <div class="stat-box"><div class="num">${todayTotal ? `${todayDone}/${todayTotal}` : '—'}</div><div class="lbl">Done today</div></div>
+      <div class="stat-box"><div class="num">${active.filter(g=>!g.archived && g.type!=='event').length}</div><div class="lbl">Active goals</div></div>
+      <div class="stat-box"><div class="num">${streakRows.length ? Math.max(...streakRows.map(r=>r.streak)) : 0}</div><div class="lbl">Best streak</div></div>
+    </div>
+
+    <div class="section-lbl">This month</div>
+    ${monthRows.length ? `<div class="list-group">${monthRows.map(r => `
+      <div class="list-row"><span class="label">${escapeHtml(r.name)}</span><span class="value">${r.total} ${escapeHtml(r.unit)}</span></div>
+    `).join('')}</div>` : `<p class="hint">Nothing logged yet this month.</p>`}
+
+    <div class="section-lbl">Streaks</div>
+    ${streakRows.length ? `<div class="list-group">${streakRows.map(r => `
+      <div class="list-row" onclick="openDetail('${r.id}')">
+        <span class="label">${escapeHtml(r.name)}</span>
+        <span class="value">${r.streak} ${r.period === 'month' ? 'mo' : 'd'} ›</span>
+      </div>
+    `).join('')}</div>` : `<p class="hint">No active goals yet.</p>`}
+  `;
+}
 
 function renderDetail(app){
   const g = goals.find(x => x.id === view.goalId);
@@ -1000,7 +1100,10 @@ function renderEventDetail(app, g){
         <div class="when">${formatWhen(e.at)}</div>
         <div class="gap">${gap}</div>
       </div>
-      <button class="del" onclick="deleteEventEntry('${g.id}','${e.id}')">✕</button>
+      <div style="display:flex; gap:4px;">
+        <button class="del" onclick="editEventEntry('${g.id}','${e.id}')" style="font-size:14px;">✎</button>
+        <button class="del" onclick="deleteEventEntry('${g.id}','${e.id}')">✕</button>
+      </div>
     </div>`;
   }).join('');
   if(!history) history = `<p class="hint">No records yet — tap "Record now" when it happens.</p>`;
@@ -1081,6 +1184,37 @@ function recordEventCustom(gid){
   };
 }
 
+function editEventEntry(gid, eventId){
+  const g = goals.find(x => x.id === gid);
+  const entry = g.events.find(e => e.id === eventId);
+  if(!entry) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-backdrop';
+  wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
+  const local = new Date(new Date(entry.at) - new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);
+  wrap.innerHTML = `
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <h2>Edit record time</h2>
+      <label class="field"><span class="lbl">Date & time</span><input type="datetime-local" id="evEditTime" value="${local}"></label>
+      <button class="btn-primary" id="evEditSaveBtn">Save</button>
+      <button class="btn-ghost" id="evEditCancelBtn">Cancel</button>
+    </div>`;
+  document.body.appendChild(wrap);
+  wrap.querySelector('#evEditCancelBtn').onclick = () => wrap.remove();
+  wrap.querySelector('#evEditSaveBtn').onclick = async () => {
+    const val = wrap.querySelector('#evEditTime').value;
+    if(!val){ toast('Pick a time'); return; }
+    const iso = new Date(val).toISOString();
+    wrap.remove();
+    await updateEventRemote(eventId, iso);
+    entry.at = iso;
+    g.events.sort((a,b) => new Date(b.at) - new Date(a.at));
+    render();
+    toast('Entry updated');
+  };
+}
+
 function deleteEventEntry(gid, eventId){
   showConfirm('Delete this record?', async () => {
     await deleteEventRemote(eventId);
@@ -1093,9 +1227,14 @@ function deleteEventEntry(gid, eventId){
 
 async function logDay(gid, d){
   const g = goals.find(x => x.id === gid);
+  const isCurrent = d === currentPeriodKey(g);
   if(g.type === 'boolean'){
     if(g.log[d] && g.log[d].met){ delete g.log[d]; await deleteLog(gid, d); }
-    else { g.log[d] = { met: true, value: 1 }; await upsertLog(gid, d, true, 1); }
+    else {
+      g.log[d] = { met: true, value: 1 };
+      await upsertLog(gid, d, true, 1);
+      if(isCurrent){ const streak = currentStreak(g); celebrateIfMilestone(g, streak); }
+    }
   } else {
     const unitWord = g.type === 'duration' ? 'minutes' : (g.unit || 'count');
     const existing = g.log[d] ? g.log[d].value : '';
@@ -1107,6 +1246,7 @@ async function logDay(gid, d){
         g.log[d] = { met, fullyMet, value: num };
         await upsertLog(gid, d, met, num);
         render();
+        if(isCurrent && met){ const streak = currentStreak(g); celebrateIfMilestone(g, streak); }
       }
     });
     return;
