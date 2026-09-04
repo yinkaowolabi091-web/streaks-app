@@ -814,7 +814,7 @@ function renderList(app){
       </div>
       ${finished
         ? `<span class="streak-pill">✓ done</span>`
-        : `<span class="streak-pill ${streak ? '' : 'zero'}">${streak}d</span>
+        : `<span class="streak-pill ${streak ? '' : 'zero'}">${streak}${g.period === 'month' ? 'mo' : 'd'}</span>
            <button class="today-btn ${done ? 'done' : ''}" onclick="event.stopPropagation(); quickLog('${g.id}')">${done ? '✓' : ''}</button>`}
     </div>`;
   }).join('');
