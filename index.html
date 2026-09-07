@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="./manifest.json">
 <title>Streaks — Daily Goals</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -201,6 +202,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_skRBOwpCtMOh__qIe41gNA_1UlEVqHV";
    registered in Supabase's Redirect URLs allowlist exactly.
    ========================================================= */
 const APP_URL = "https://yinkaowolabi091-web.github.io/streaks-app/";
+const VAPID_PUBLIC_KEY = "BAREEiJ3xpNw1KKWX4PoLmtTjgvLV3GVSI2Uvfz2HyCsuLTWrGEw7kaC_urcN6ZiERH40TD_FqBfZg05rpvXvgg";
 
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -430,6 +432,7 @@ async function init(){
   });
   if(session) await loadGoals(); else render();
   cleanUrl();
+  refreshPushStatus();
 }
 
 function checkForAuthError(){
@@ -502,9 +505,11 @@ async function updateGoalRemote(id, payload){
   if(error){ toast('Could not update goal'); console.error(error); }
 }
 async function updateReminderRemote(id, reminder, reminderDayOfMonth){
+  const tz = reminder ? Intl.DateTimeFormat().resolvedOptions().timeZone : null;
   const { error } = await sb.from('goals').update({
     reminder_time: reminder,
-    reminder_day_of_month: reminderDayOfMonth ?? null
+    reminder_day_of_month: reminderDayOfMonth ?? null,
+    reminder_timezone: tz
   }).eq('id', id);
   if(error){ toast('Could not save reminder'); console.error(error); }
 }
@@ -857,6 +862,9 @@ function showMainMenu(){
         </div>
         <div class="list-row" onclick="this.closest('.sheet-backdrop').remove(); showHelp();">
           <span class="label">How this works</span><span class="chev">›</span>
+        </div>
+        <div class="list-row" onclick="this.closest('.sheet-backdrop').remove(); togglePushFromMenu();">
+          <span class="label">Notifications</span><span class="value">${pushSubscribed ? 'On ›' : 'Off ›'}</span>
         </div>
         <div class="list-row" onclick="this.closest('.sheet-backdrop').remove(); showLockSettings();">
           <span class="label">Face ID lock</span><span class="value">${isFaceLockEnabled() ? 'On ›' : 'Off ›'}</span>
@@ -1523,6 +1531,78 @@ setInterval(() => {
     }
   });
 }, 30000);
+
+/* ---------------- push notifications (real, work when app is closed) ---------------- */
+function urlBase64ToUint8Array(base64String){
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+}
+
+function isPushSupported(){
+  return 'serviceWorker' in navigator && 'PushManager' in window;
+}
+
+let pushSubscribed = false;
+async function refreshPushStatus(){
+  if(!isPushSupported()) return;
+  try{
+    const reg = await navigator.serviceWorker.getRegistration('./');
+    const sub = reg ? await reg.pushManager.getSubscription() : null;
+    pushSubscribed = !!sub;
+  } catch(e){ pushSubscribed = false; }
+}
+
+async function enablePushNotifications(){
+  if(!isPushSupported()){ toast('Notifications aren\'t supported in this browser'); return; }
+  try{
+    const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+    await navigator.serviceWorker.ready;
+    const perm = await Notification.requestPermission();
+    if(perm !== 'granted'){ toast('Notification permission denied'); return; }
+
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+    });
+    const json = sub.toJSON();
+    const { error } = await sb.from('push_subscriptions').upsert({
+      user_id: session.user.id,
+      endpoint: json.endpoint,
+      p256dh: json.keys.p256dh,
+      auth: json.keys.auth
+    }, { onConflict: 'endpoint' });
+    if(error){ console.error(error); toast('Could not save subscription'); return; }
+    pushSubscribed = true;
+    toast('Notifications enabled on this device');
+  } catch(err){
+    console.error(err);
+    toast('Could not enable notifications');
+  }
+}
+
+async function disablePushNotifications(){
+  try{
+    const reg = await navigator.serviceWorker.getRegistration('./');
+    const sub = reg ? await reg.pushManager.getSubscription() : null;
+    if(sub){
+      await sb.from('push_subscriptions').delete().eq('endpoint', sub.endpoint);
+      await sub.unsubscribe();
+    }
+  } catch(err){ console.error(err); }
+  pushSubscribed = false;
+  toast('Notifications turned off on this device');
+}
+
+async function togglePushFromMenu(){
+  if(pushSubscribed) await disablePushNotifications();
+  else await enablePushNotifications();
+}
+
+if(isPushSupported()){
+  navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(()=>{});
+}
 
 init();
 </script>

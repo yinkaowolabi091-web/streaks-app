@@ -1,0 +1,10 @@
+{
+  "name": "Streaks",
+  "short_name": "Streaks",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#12151A",
+  "theme_color": "#12151A",
+  "icons": []
+}
