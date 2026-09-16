@@ -150,10 +150,14 @@
   .toast.show{opacity:1;}
   .loading{display:flex; align-items:center; justify-content:center; min-height:60vh; color:var(--text-dim); font-size:14px;}
 
-  .confirm-box{background:var(--card); width:100%; max-width:340px; border-radius:18px; padding:22px 20px; text-align:center;}
-  .confirm-box p{font-size:15px; margin:0 0 18px; color:var(--text);}
+  .confirm-backdrop{
+    position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:40;
+    display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  .confirm-box{background:var(--card); width:100%; max-width:340px; border-radius:18px; padding:22px 20px; text-align:center; border:1px solid var(--line);}
+  .confirm-box p{font-size:15px; margin:0 0 18px; color:var(--text); line-height:1.45;}
   .confirm-row{display:flex; gap:10px;}
-  .confirm-row button{flex:1; padding:13px; border-radius:12px; border:none; font-size:14px; font-weight:600;}
+  .confirm-row button{flex:1; padding:13px; border-radius:12px; border:none; font-size:14px; font-weight:600; font-family:var(--font);}
   .confirm-cancel{background:var(--card-hi); color:var(--text-dim);}
   .confirm-ok{background:var(--warn); color:#1a0e0a;}
 
@@ -371,8 +375,7 @@ function showHelp(){
 
 function showConfirm(message, onConfirm){
   const wrap = document.createElement('div');
-  wrap.className = 'sheet-backdrop';
-  wrap.style.alignItems = 'center';
+  wrap.className = 'confirm-backdrop';
   wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
   wrap.innerHTML = `
     <div class="confirm-box">
@@ -476,7 +479,7 @@ async function loadGoals(){
     (logRows || []).filter(l => l.goal_id === g.id).forEach(l => {
       log[l.log_date] = { met: l.met, fullyMet: l.value >= g.target, value: l.value };
     });
-    const events = (eventRows || []).filter(e => e.goal_id === g.id).map(e => ({ id: e.id, at: e.occurred_at }));
+    const events = (eventRows || []).filter(e => e.goal_id === g.id).map(e => ({ id: e.id, at: e.occurred_at, note: e.note || '' }));
     return {
       id: g.id, name: g.name, type: g.type, target: g.target, unit: g.unit,
       days: g.days, start: g.start_date, reminder: g.reminder_time,
@@ -531,13 +534,16 @@ async function deleteLog(goalId, date){
   const { error } = await sb.from('goal_logs').delete().eq('goal_id', goalId).eq('log_date', date);
   if(error){ console.error(error); }
 }
-async function insertEvent(goalId, atIso){
-  const { data, error } = await sb.from('event_logs').insert({ goal_id: goalId, occurred_at: atIso }).select().single();
+async function insertEvent(goalId, atIso, note){
+  const { data, error } = await sb.from('event_logs').insert({ goal_id: goalId, occurred_at: atIso, note: note || null }).select().single();
   if(error){ toast('Could not record'); console.error(error); return null; }
   return data;
 }
-async function updateEventRemote(id, atIso){
-  const { error } = await sb.from('event_logs').update({ occurred_at: atIso }).eq('id', id);
+async function updateEventRemote(id, atIso, note){
+  const payload = {};
+  if(atIso !== undefined) payload.occurred_at = atIso;
+  if(note !== undefined) payload.note = note || null;
+  const { error } = await sb.from('event_logs').update(payload).eq('id', id);
   if(error){ toast('Could not update entry'); console.error(error); }
 }
 async function deleteEventRemote(id){
@@ -579,7 +585,7 @@ function drawGoalPage(doc, g){
     const rows = g.events.slice().reverse().map((e, i, arr) => {
       const prev = arr[i-1];
       const gap = prev ? formatElapsed(new Date(e.at) - new Date(prev.at)).replace(' ago','') : '—';
-      return [formatWhen(e.at), gap];
+      return [formatWhen(e.at), gap, e.note || ''];
     }).reverse();
 
     let summaryY = 42;
@@ -600,8 +606,8 @@ function drawGoalPage(doc, g){
 
     doc.autoTable({
       startY: summaryY + 10,
-      head: [['Recorded at', 'Gap since previous']],
-      body: rows.length ? rows : [['No records yet', '']],
+      head: [['Recorded at', 'Gap since previous', 'Note']],
+      body: rows.length ? rows : [['No records yet', '', '']],
       styles: { fontSize: 9 },
       headStyles: { fillColor: [95, 217, 138], textColor: [10,20,15] }
     });
@@ -1107,6 +1113,7 @@ function renderEventDetail(app, g){
       <div>
         <div class="when">${formatWhen(e.at)}</div>
         <div class="gap">${gap}</div>
+        ${e.note ? `<div class="gap" style="color:var(--text-dim); margin-top:2px;">"${escapeHtml(e.note)}"</div>` : ''}
       </div>
       <div style="display:flex; gap:4px;">
         <button class="del" onclick="editEventEntry('${g.id}','${e.id}')" style="font-size:14px;">✎</button>
@@ -1151,14 +1158,32 @@ function renderEventDetail(app, g){
   `;
 }
 
-async function recordEventNow(gid){
+function recordEventNow(gid){
   const g = goals.find(x => x.id === gid);
-  const created = await insertEvent(gid, new Date().toISOString());
-  if(created){
-    g.events.unshift({ id: created.id, at: created.occurred_at });
-    render();
-    toast('Recorded');
-  }
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-backdrop';
+  wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
+  wrap.innerHTML = `
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <h2>Record for ${escapeHtml(g.name)}</h2>
+      <p class="hint" style="margin-bottom:14px;">Recording for right now.</p>
+      <label class="field"><span class="lbl">Note (optional)</span><input type="text" id="evNote" placeholder="e.g. felt stressed, saw a trigger..."></label>
+      <button class="btn-primary" id="evSaveBtn">Record now</button>
+      <button class="btn-ghost" id="evCancelBtn">Cancel</button>
+    </div>`;
+  document.body.appendChild(wrap);
+  wrap.querySelector('#evCancelBtn').onclick = () => wrap.remove();
+  wrap.querySelector('#evSaveBtn').onclick = async () => {
+    const note = wrap.querySelector('#evNote').value.trim();
+    wrap.remove();
+    const created = await insertEvent(gid, new Date().toISOString(), note);
+    if(created){
+      g.events.unshift({ id: created.id, at: created.occurred_at, note: created.note || '' });
+      render();
+      toast('Recorded');
+    }
+  };
 }
 
 function recordEventCustom(gid){
@@ -1172,6 +1197,7 @@ function recordEventCustom(gid){
       <div class="sheet-handle"></div>
       <h2>Record for ${escapeHtml(g.name)}</h2>
       <label class="field"><span class="lbl">Date & time</span><input type="datetime-local" id="evTime" value="${nowLocal}"></label>
+      <label class="field"><span class="lbl">Note (optional)</span><input type="text" id="evNote" placeholder="e.g. felt stressed, saw a trigger..."></label>
       <button class="btn-primary" id="evSaveBtn">Save</button>
       <button class="btn-ghost" id="evCancelBtn">Cancel</button>
     </div>`;
@@ -1180,11 +1206,12 @@ function recordEventCustom(gid){
   wrap.querySelector('#evSaveBtn').onclick = async () => {
     const val = wrap.querySelector('#evTime').value;
     if(!val){ toast('Pick a time'); return; }
+    const note = wrap.querySelector('#evNote').value.trim();
     const iso = new Date(val).toISOString();
     wrap.remove();
-    const created = await insertEvent(gid, iso);
+    const created = await insertEvent(gid, iso, note);
     if(created){
-      g.events.push({ id: created.id, at: created.occurred_at });
+      g.events.push({ id: created.id, at: created.occurred_at, note: created.note || '' });
       g.events.sort((a,b) => new Date(b.at) - new Date(a.at));
       render();
       toast('Recorded');
@@ -1203,8 +1230,9 @@ function editEventEntry(gid, eventId){
   wrap.innerHTML = `
     <div class="sheet">
       <div class="sheet-handle"></div>
-      <h2>Edit record time</h2>
+      <h2>Edit record</h2>
       <label class="field"><span class="lbl">Date & time</span><input type="datetime-local" id="evEditTime" value="${local}"></label>
+      <label class="field"><span class="lbl">Note (optional)</span><input type="text" id="evEditNote" value="${escapeHtml(entry.note || '')}" placeholder="e.g. felt stressed, saw a trigger..."></label>
       <button class="btn-primary" id="evEditSaveBtn">Save</button>
       <button class="btn-ghost" id="evEditCancelBtn">Cancel</button>
     </div>`;
@@ -1213,10 +1241,12 @@ function editEventEntry(gid, eventId){
   wrap.querySelector('#evEditSaveBtn').onclick = async () => {
     const val = wrap.querySelector('#evEditTime').value;
     if(!val){ toast('Pick a time'); return; }
+    const note = wrap.querySelector('#evEditNote').value.trim();
     const iso = new Date(val).toISOString();
     wrap.remove();
-    await updateEventRemote(eventId, iso);
+    await updateEventRemote(eventId, iso, note);
     entry.at = iso;
+    entry.note = note;
     g.events.sort((a,b) => new Date(b.at) - new Date(a.at));
     render();
     toast('Entry updated');
